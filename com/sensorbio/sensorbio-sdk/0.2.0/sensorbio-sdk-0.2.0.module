@@ -1,0 +1,346 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "group": "com.sensorbio",
+    "module": "sensorbio-sdk",
+    "version": "0.2.0",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "8.14.3"
+    }
+  },
+  "variants": [
+    {
+      "name": "publicReleaseVariantPublicReleaseApiPublication",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.libraryelements": "aar",
+        "org.gradle.usage": "java-api"
+      },
+      "files": [
+        {
+          "name": "sensorbio-sdk-0.2.0.aar",
+          "url": "sensorbio-sdk-0.2.0.aar",
+          "size": 12303367,
+          "sha512": "86a5c5d380e322c1e21869116514a9bc9e0b9edcfc785d12e019e1d53055012219bb519a1592b568f8941d51be434d50abad1eb90ecf185ea578c609f4526393",
+          "sha256": "af09a31c6c28e54e0f79f930ab8156867fba3f9b559baee0877c7b26436f8567",
+          "sha1": "c21fa4052d90fc0509c9337ff96f316c72a4db06",
+          "md5": "e45bf5c68bd162cbedb04c94de200924"
+        }
+      ]
+    },
+    {
+      "name": "publicReleaseVariantPublicReleaseRuntimePublication",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.libraryelements": "aar",
+        "org.gradle.usage": "java-runtime"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-parcelize-runtime",
+          "version": {
+            "requires": "2.2.10"
+          },
+          "excludes": [
+            {
+              "group": "com.google.guava",
+              "module": "listenablefuture"
+            }
+          ]
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.2.10"
+          },
+          "excludes": [
+            {
+              "group": "com.google.guava",
+              "module": "listenablefuture"
+            }
+          ]
+        },
+        {
+          "group": "androidx.room",
+          "module": "room-runtime",
+          "version": {
+            "requires": "2.7.2"
+          },
+          "excludes": [
+            {
+              "group": "com.google.guava",
+              "module": "listenablefuture"
+            }
+          ]
+        },
+        {
+          "group": "androidx.room",
+          "module": "room-ktx",
+          "version": {
+            "requires": "2.7.2"
+          },
+          "excludes": [
+            {
+              "group": "com.google.guava",
+              "module": "listenablefuture"
+            }
+          ]
+        },
+        {
+          "group": "androidx.lifecycle",
+          "module": "lifecycle-livedata-ktx",
+          "version": {
+            "requires": "2.9.3"
+          },
+          "excludes": [
+            {
+              "group": "com.google.guava",
+              "module": "listenablefuture"
+            }
+          ]
+        },
+        {
+          "group": "androidx.lifecycle",
+          "module": "lifecycle-process",
+          "version": {
+            "requires": "2.9.3"
+          },
+          "excludes": [
+            {
+              "group": "com.google.guava",
+              "module": "listenablefuture"
+            }
+          ]
+        },
+        {
+          "group": "com.google.code.gson",
+          "module": "gson",
+          "version": {
+            "requires": "2.13.1"
+          },
+          "excludes": [
+            {
+              "group": "com.google.guava",
+              "module": "listenablefuture"
+            }
+          ]
+        },
+        {
+          "group": "org.eclipse.paho",
+          "module": "org.eclipse.paho.client.mqttv3",
+          "version": {
+            "requires": "1.2.5"
+          },
+          "excludes": [
+            {
+              "group": "com.google.guava",
+              "module": "listenablefuture"
+            }
+          ]
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-coroutines-android",
+          "version": {
+            "requires": "1.10.2"
+          },
+          "excludes": [
+            {
+              "group": "com.google.guava",
+              "module": "listenablefuture"
+            }
+          ]
+        },
+        {
+          "group": "joda-time",
+          "module": "joda-time",
+          "version": {
+            "requires": "2.14.0"
+          },
+          "excludes": [
+            {
+              "group": "com.google.guava",
+              "module": "listenablefuture"
+            }
+          ]
+        },
+        {
+          "group": "com.squareup.okhttp3",
+          "module": "okhttp",
+          "version": {
+            "requires": "5.1.0"
+          },
+          "excludes": [
+            {
+              "group": "com.google.guava",
+              "module": "listenablefuture"
+            }
+          ]
+        },
+        {
+          "group": "com.jakewharton",
+          "module": "disklrucache",
+          "version": {
+            "requires": "2.0.2"
+          },
+          "excludes": [
+            {
+              "group": "com.google.guava",
+              "module": "listenablefuture"
+            }
+          ]
+        },
+        {
+          "group": "androidx.security",
+          "module": "security-crypto",
+          "version": {
+            "requires": "1.1.0"
+          },
+          "excludes": [
+            {
+              "group": "com.google.guava",
+              "module": "listenablefuture"
+            }
+          ]
+        },
+        {
+          "group": "androidx.work",
+          "module": "work-runtime-ktx",
+          "version": {
+            "requires": "2.10.3"
+          },
+          "excludes": [
+            {
+              "group": "com.google.guava",
+              "module": "listenablefuture"
+            }
+          ]
+        },
+        {
+          "group": "androidx.core",
+          "module": "core-ktx",
+          "version": {
+            "requires": "1.17.0"
+          },
+          "excludes": [
+            {
+              "group": "com.google.guava",
+              "module": "listenablefuture"
+            }
+          ]
+        },
+        {
+          "group": "androidx.lifecycle",
+          "module": "lifecycle-viewmodel-compose",
+          "version": {
+            "requires": "2.8.7"
+          },
+          "excludes": [
+            {
+              "group": "com.google.guava",
+              "module": "listenablefuture"
+            }
+          ]
+        },
+        {
+          "group": "com.google.protobuf",
+          "module": "protobuf-javalite",
+          "version": {
+            "requires": "4.32.1"
+          },
+          "excludes": [
+            {
+              "group": "com.google.guava",
+              "module": "listenablefuture"
+            }
+          ]
+        },
+        {
+          "group": "io.grpc",
+          "module": "grpc-protobuf-lite",
+          "version": {
+            "requires": "1.75.0"
+          },
+          "excludes": [
+            {
+              "group": "com.google.guava",
+              "module": "listenablefuture"
+            }
+          ]
+        },
+        {
+          "group": "io.grpc",
+          "module": "grpc-core",
+          "version": {
+            "requires": "1.75.0"
+          },
+          "excludes": [
+            {
+              "group": "com.google.guava",
+              "module": "listenablefuture"
+            }
+          ]
+        },
+        {
+          "group": "io.grpc",
+          "module": "grpc-okhttp",
+          "version": {
+            "requires": "1.75.0"
+          },
+          "excludes": [
+            {
+              "group": "com.google.guava",
+              "module": "listenablefuture"
+            }
+          ]
+        },
+        {
+          "group": "io.grpc",
+          "module": "grpc-stub",
+          "version": {
+            "requires": "1.75.0"
+          },
+          "excludes": [
+            {
+              "group": "com.google.guava",
+              "module": "listenablefuture"
+            }
+          ]
+        },
+        {
+          "group": "io.grpc",
+          "module": "grpc-android",
+          "version": {
+            "requires": "1.75.0"
+          },
+          "excludes": [
+            {
+              "group": "com.google.guava",
+              "module": "listenablefuture"
+            }
+          ]
+        }
+      ],
+      "files": [
+        {
+          "name": "sensorbio-sdk-0.2.0.aar",
+          "url": "sensorbio-sdk-0.2.0.aar",
+          "size": 12303367,
+          "sha512": "86a5c5d380e322c1e21869116514a9bc9e0b9edcfc785d12e019e1d53055012219bb519a1592b568f8941d51be434d50abad1eb90ecf185ea578c609f4526393",
+          "sha256": "af09a31c6c28e54e0f79f930ab8156867fba3f9b559baee0877c7b26436f8567",
+          "sha1": "c21fa4052d90fc0509c9337ff96f316c72a4db06",
+          "md5": "e45bf5c68bd162cbedb04c94de200924"
+        }
+      ]
+    }
+  ]
+}
