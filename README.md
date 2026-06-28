@@ -7,6 +7,7 @@ This repository contains:
 
 - **`com/sensorbio/sensorbio-sdk/`** — the published `.aar` + `.pom` + `maven-metadata.xml` (the Maven tree).
 - **[`SDK_INTERFACE.md`](./SDK_INTERFACE.md)** — the public API reference (the surface a customer app calls).
+- **[`ExampleApp/`](./ExampleApp)** — a reference Jetpack Compose integration you can build + run.
 
 > The `com/…` tree + `SDK_INTERFACE.md` are **generated** by the SDK's release script
 > (`scripts/release.sh` in `mobile_sensorbio_sdk_android`). Do not hand-edit them.
@@ -74,11 +75,14 @@ SensorBioSDK.connected.collect { isConnected -> /* … */ }
 val dashboard = SensorBioSDK.fetchDashboardData(date = Instant.now(), tzOffset = tz)
 ```
 
-See **[`SDK_INTERFACE.md`](./SDK_INTERFACE.md)** for the full public surface.
+See **[`SDK_INTERFACE.md`](./SDK_INTERFACE.md)** for the full public surface, and **[`ExampleApp/`](./ExampleApp)**
+for a complete reference integration (sign-in / create-account → pair → dashboard with metric detail views,
+insights, profile).
 
 ## Documentation
 
 - **[`SDK_INTERFACE.md`](./SDK_INTERFACE.md)** — public API reference (synced from the SDK repo at each release).
+- **[`ExampleApp/README.md`](./ExampleApp/README.md)** — building + running the reference app.
 
 ## Available versions
 

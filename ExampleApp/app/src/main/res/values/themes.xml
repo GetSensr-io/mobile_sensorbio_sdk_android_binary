@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Compose supplies the real theming; the Activity only needs a NoActionBar shell.
+         Parent on the framework Material theme so no Material Components XML dependency is required. -->
+    <style name="Theme.SensorBioExample" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>
