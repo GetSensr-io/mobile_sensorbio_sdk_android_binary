@@ -55,9 +55,17 @@ The **host app requests Bluetooth runtime permissions** before any BLE operation
 permissions — a BLE call made without permission throws `SecurityException`. (Mirrors iOS, where the
 integrator supplies the usage strings and drives the prompt.)
 
-Request, on Android 12+ (API 31): `BLUETOOTH_SCAN` + `BLUETOOTH_CONNECT`; on API < 31:
-`ACCESS_FINE_LOCATION` (BLE scanning requires location on older releases). The SDK's manifest declares
-the BLE permissions; the **grant** is the host's to obtain.
+Request at runtime:
+
+- **Android 12+ (API 31+):** `BLUETOOTH_SCAN`, `BLUETOOTH_CONNECT`, **and** `ACCESS_FINE_LOCATION`.
+- **API < 31:** `ACCESS_FINE_LOCATION`.
+
+**Location is required at every API level** because the SDK's `BLUETOOTH_SCAN` is **not** declared
+`neverForLocation` — Android therefore treats scan results as location-deriving and returns none unless
+fine-location is granted. **Location Services must also be turned on** on the device, or scans come back
+empty. (A future SDK release may add the `neverForLocation` flag to drop the location requirement on
+12+; until then, request location.) The SDK's manifest declares the BLE permissions; the **grant** is
+the host's to obtain. See `ExampleApp/`'s `MainActivity`/`PairDeviceScreen` for the request pattern.
 
 ---
 
