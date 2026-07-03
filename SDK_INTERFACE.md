@@ -15,7 +15,7 @@ This document describes the **public** customer-facing surface of the SensorBio 
 > copy. SDK `version = "0.2.1"`.
 
 The design rule: **the app integrates with ONLY the `SensorBioSDK` object.** Everything else the host
-needs is either a domain type it receives (`SB_*`) or a **seam** it implements (§4).
+needs is either a domain type it receives (`SB_*`) or a **hook** it supplies (§4).
 
 ---
 
@@ -127,6 +127,7 @@ event streams, recording control, device & BLE control (§3.4), and the flat ser
 | `haveUnuploadedPackets` | `StateFlow<Boolean>` | synced packets buffered on disk awaiting upload |
 | `webAppCookie` | `StateFlow<String?>` | web-dashboard auth cookie from the login response; set on sign-in, cleared on sign-out, persisted |
 | `userProfileFlow` | `StateFlow<SB_UserProfile?>` | reactive signed-in profile; emits on sign-in / profile / photo / goals / globals refresh / sign-out |
+| `userAppSettings` | `StateFlow<SB_UserAppSettings?>` | reactive app-settings (units/preferences); null until loaded, manual refresh via `refreshUserAppSettings()` |
 | `session` | `StateFlow<SB_Session?>` | reactive auth-session identity, derived from the profile; null when signed out |
 | `organization` | `StateFlow<SB_OrganizationMembership?>` | reactive org membership; null when signed out |
 | `featureFlags` | `StateFlow<List<String>>` | reactive feature flags; set at login + globals refresh, cleared on sign-out |
@@ -157,6 +158,7 @@ event streams, recording control, device & BLE control (§3.4), and the flat ser
 | `pairingConnection` | `String` | mid-pairing connected event carrying the device macAddress; fires alongside `deviceConnected` |
 | `hrSyncFinishedForActivity` | `Unit` | a recorded activity's HR/data finished syncing+uploading |
 | `signOutComplete` | `Unit` | involuntary sign-out finished (terminal refresh-token failure); host runs teardown + routes to login |
+| `syncNotificationActions` | `SB_SyncNotificationAction` | sync-lifecycle notification actions the host surfaces as OS notifications (replaces the former `SB_SyncNotificationHandler` seam) |
 
 ### 3.3 Recording control (suspend, on the facade)
 
@@ -189,6 +191,7 @@ events, plus the connected-device identity below.)
 | `reset` | `() -> Unit` | factory-reset the device |
 | `userLED` | `suspend (red=…, green=…, blue=…, blink=…, seconds: Int)` | LED control (awaits the BLE write) |
 | `updateFirmware` / `setFirmwareUpdateDeviceId` | `suspend (url, delay?, size?)` *(throws `SB_FirmwareUpdateError(canRetry)`)* / `(deviceId: String?)` | firmware flash (`url` = local file); progress on the `firmwareProgress` event (§3.2). `setFirmwareUpdateDeviceId` is the session-guard seam |
+| `updateConnectedDeviceFirmware` | `(packet: SB_FirmwareVersionPacket) -> Unit` | apply a resolved firmware-version packet to the connected device |
 | `setAskForDeviceResponse` | `(enable: Boolean) -> Unit` | device button-tap prompting |
 | `syncDeviceData` | `suspend (force: Boolean = false) -> …` | trigger a packet-count sync |
 | `airplaneMode` | `suspend () -> Unit` | put the connected device into airplane mode; persists + publishes `deviceAirplaneModeOn`, cleared on next connect |
@@ -216,32 +219,25 @@ events, plus the connected-device identity below.)
 |---|---|---|
 | `remoteGlobals` | `SB_RemoteGlobals` | goals/branding globals |
 | `attachRemoteGlobals(owner)` / `refreshGlobalState()` | — / `suspend (): SB_OrgMembership` | globals lifecycle auto-refresh / manual refresh returning org membership |
-| `hostPrefs` | `SharedPreferences` | SDK-owned prefs-store seam |
 | `deviceId` | `val String` | SDK-owned stable per-install id (generated + persisted in `sdk_prefs`); read-only — the host reads it only to tag its own analytics with the same id |
 | `clearLocalRecordingState()` | — | recording-state lifecycle |
+| `refreshUserAppSettings()` | `suspend (): SB_UserAppSettings` | force-refresh the app-settings backing the `userAppSettings` flow (§3.1) |
 
 
 ---
 
 ## 4. Host seams (the legitimate public extension points)
 
-These are the `var` lambdas / interface properties the **host implements or supplies** — the SDK
-reads them. They are *meant* to be public.
+The public binary exposes a **single host-supplied hook**: `logHandler` (§2.2) — the sink the SDK
+writes its logs to (unset = silent). App identity is supplied once as configuration via `SB_AppConfig`
+(`appType` / `appFlavor` / `appDisplayName` / `enableCrashlytics`) passed to `initialize` (§2.1).
 
-**Providers (synchronous reads):**
+Everything a host previously wired as a supplied callback or implemented interface is now delivered
+through the observable event streams (§3.2) — the host **observes**, it does not implement a seam:
 
-| Seam | Type | Role |
-|---|---|---|
-| `firebaseTokenProvider` | `() -> String?` | cached FCM token |
-| `fetchFirebaseToken` | `((String) -> Unit) -> Unit)?` | async fresh-token fetch |
-
-**Global event handlers (lossless sinks wired in the Application class):**
-
-`onUnauthenticated`, `onEnvironmentChanged`, `appLoggingStarter`.
-
-**Host-implemented interfaces (seam objects):**
-
-`SB_SyncNotificationHandler`, `SB_BluetoothAnalytics`, `SB_DeviceLogsWriter`, `SB_UserSessionHost`.
+- **Sync notifications** — observe `syncNotificationActions` and raise OS notifications from it.
+- **Involuntary sign-out** — observe `signOutComplete`, run teardown, and route to login.
+- **Analytics** — observe `analyticsEvents` and forward them to your backend.
 
 ---
 
@@ -254,8 +250,8 @@ Called directly on `SensorBioSDK.<method>(…)`. Reads are `suspend fun … : SB
 | Dashboard | `fetchDashboardData(date: Instant, tzOffset, forceRemote)`, `clearDashboardData(date: Instant)` |
 | Trending | `fetchRangeHR`/`fetchDailyHR`, `fetchRangeHRV`/`fetchDailyHRV`, `fetchRangeRR`/`fetchDailyRR`, `fetchRangeSpO2`/`fetchDailySpO2`, `fetchCalories`, `fetchSteps`, `fetchDailyActivityDetail`, `fetchRangeRecovery`/`fetchDailyRecovery` *(all take `date: Instant`; `forceRemote` optional)* |
 | Sleep | `fetchSleepDetail(endDate: Instant, endTimestamp)`, `fetchSleepAggregation(date: Instant, …)`, `fetchSleepSessions(date: Instant)`, `deleteSleepSession(endTimestamp, date: Instant)`, `modifySleepSession(onset: Instant, wakeUp: Instant, endTimestamp, date: Instant) -> String`, `addSleepSession(onset: Instant, wakeUp: Instant)` *(writes throw `SB_SleepWriteError`)* |
-| Workouts | `fetchWorkoutDetail(workoutTime: Instant)`, `modifyWorkout(action, date: Instant, timestamp: Instant, …)`, `fetchWorkoutSummary(date: Instant, granularity, workoutName, workoutTime: Instant)`, `fetchWorkoutTimeline(…) -> SB_WorkoutTimelineResult`, `fetchWorkoutRecordingInfo` |
-| Activities | `fetchActivityList() -> SB_ActivityRecordingList`, `fetchTrainedActivities()` |
+| Workouts | `fetchWorkoutDetail(workoutTime: Instant)`, `modifyWorkout(action, date: Instant, timestamp: Instant, …)`, `fetchWorkoutSummary(date: Instant, granularity: SB_SummaryGranularity, workoutName, workoutTime: Instant)`, `fetchWorkoutTimeline(…, direction: SB_PageFetchDirection) -> SB_WorkoutTimelineResult`, `fetchWorkoutRecordingInfo` |
+| Activities | `fetchActivityList(force: Boolean = false) -> SB_ActivityRecordingList`, `fetchTrainedActivities()` |
 | Spot-check | `fetchSpotCheckDetails(recordingId, impersonatedUserId?)` *(one-shot suspend read; throws on RPC error)* |
 | Recording meta | `fetchRecordingMetaInfo(type) -> List<SB_RecordingSessionMetaItem>`, `deleteRecordingMeta(id, name, type)` |
 | Insights | `fetchNewInsights`, `submitInsightsFeedback`, `fetchPopulationInsightsMetricList`, `fetchPopulationInsights` |
@@ -264,9 +260,9 @@ Called directly on `SensorBioSDK.<method>(…)`. Reads are `suspend fun … : SB
 | Goals | `fetchGoals()`; `updateGoals(steps, calories, sleep)` *(suspend → `SB_UpdateGoalsOutcome`)* |
 | Stats | `fetchDailyStats(startDate, days, includeBiometrics, includeSleep, includeSteps)` |
 | Agreements | `shouldRequestAgreement`, `acceptAgreements(tosVersion, healthDataVersion)`, `acceptCurrentAgreements` *(suspend)* |
-| Account | `createAccount(SB_CreateAccountRequest)`, `updateUserProfile(SB_UserProfileUpdate)`, `changePassword(currentPassword, newPassword)`, `requestPasswordReset`, `checkEmailAvailability`, `validateAccountRequirements`, `refreshUser`, `hydrateSession`, `generateTemporaryAuthToken() -> String?`, `registerApp(deviceId)` |
+| Account | `createAccount(SB_CreateAccountRequest)`, `updateUserProfile(SB_UserProfileUpdate)`, `changePassword(currentPassword, newPassword)`, `requestPasswordReset`, `checkEmailAvailability`, `validateAccountRequirements(SB_ValidateAccountRequirementsRequest) -> SB_ValidateAccountRequirementsResult`, `refreshUser`, `hydrateSession`, `generateTemporaryAuthToken() -> String?`, `registerApp(deviceId)` |
 | Recording submit | `createActivitySession(activityName, startEpochMs, durationSecs)` *(suspend; manual after-the-fact log)* |
-| Session | `signIn(email, password) -> SB_SignInOutcome`, `signOut()`, `persistUser`, `login`, `logout`, `deleteAccount`, `clearSession`, `clearPrefsOnLogout` *(signed-in identity is observable — see §3.1 `session`/`userProfileFlow`)* |
+| Session | `signIn(email, password) -> SB_SignInOutcome`, `signOut()`, `persistUser`, `deleteAccount`, `clearSession`, `clearPrefsOnLogout` *(signed-in identity is observable — see §3.1 `session`/`userProfileFlow`)* |
 | Server writes | `reprocessSleep`, `updateUserDeviceInfo`, `uploadUserPhoto` *(→ URL)*, `deleteUserPhoto` |
 
 
@@ -280,7 +276,8 @@ Called directly on `SensorBioSDK.<method>(…)`. Reads are `suspend fun … : SB
   `SB_SignInOutcome`, `SB_CreateAccountOutcome`, `SB_ChangePasswordOutcome`,
   `SB_EmailAvailabilityOutcome`, `SB_UpdateUserProfileOutcome`, `SB_RequestPasswordResetOutcome`,
   `SB_AgreementCheck`, `SB_Gender`, `SB_CreateAccountRequest`, `SB_UserProfileUpdate`,
-  `SB_OrganizationMembership`, `SB_OrganizationMemberStatus`.
+  `SB_ValidateAccountRequirementsRequest`, `SB_ValidateAccountRequirementsResult`,
+  `SB_OrganizationMembership`, `SB_OrganizationMemberStatus`, `SB_OrgMembership`.
 - **Devices / Bluetooth** — `SB_PairedDeviceState`, `SB_DiscoveredDevice`, `SB_BSDeviceModel`, `SB_BluetoothDeviceType`,
   `SB_ConnectionStage`, `SB_BluetoothResetState`, `SB_BatteryLevel`, `SB_DeviceLinkFailure`,
   `SB_SyncResult`, `SB_FirmwareInfo`, `SB_FirmwareUpdateError`, `SB_FirmwareVersionPacket`, `SB_DeviceResetResult`, `SB_ServerDeviceName`.
@@ -296,7 +293,8 @@ Called directly on `SensorBioSDK.<method>(…)`. Reads are `suspend fun … : SB
 - **Activity / workout / steps** — `SB_TrainedActivity`, `SB_ActivityRecordingList`,
   `SB_ActivitySummary`, `SB_WorkoutDetail`, `SB_WorkoutTimelineResult`, `SB_WorkoutSummaryMetric`,
   `SB_ModifyAction`, `SB_ModifyOutcome`, `SB_ExerciseZones`, `SB_StepsTrending`,
-  `SB_StepMetric`, `SB_StepDistanceCalories`, `SB_ActivityDetail`, `SB_ActivityScore`,
+  `SB_StepMetric`, `SB_StepMetricType`, `SB_ActivityDetail`, `SB_ActivityScore`,
+  `SB_SummaryGranularity`, `SB_PageFetchDirection`,
   `SB_WLSRecordingType`, `SB_WorkoutRecordingInfo`(+`SB_OngoingWorkoutProgram`).
 - **Biometrics / metrics** — HR/HRV/SpO2/RR daily+range graph & trending families
   (`SB_HR*`, `SB_HRV*`, `SB_SpO2*`, `SB_RR*`); live per-sample stream payloads `SB_HeartRateSample` /
@@ -307,11 +305,12 @@ Called directly on `SensorBioSDK.<method>(…)`. Reads are `suspend fun … : SB
 - **Dashboard** — `SB_DashboardData` + ~20 card/metric types (`SB_DashboardMetric`,
   `SB_DashboardInsight`, `SB_DashboardGradientCard`, `SB_DashboardSleepItem`, …).
 - **Insights / population** — `SB_NewInsights`, `SB_InsightItem`, `SB_InsightFeedback`,
-  `SB_PopulationInsights`(+filters/histogram/radar), `SB_DailyStatsResponse`.
+  `SB_PopulationInsights`(+filters/histogram/radar), `SB_PopulationInsightsFilterList`,
+  `SB_PopulationMetricType`, `SB_PopulationAgeGroup`, `SB_PopulationGender`, `SB_DailyStatsResponse`.
 - **Meditation** — `SB_MeditationGraph`, `SB_MeditationScore`(+factors/penalties).
-- **Events / elements** — `SB_NotificationElement`.
+- **Events / elements** — `SB_NotificationElement`, `SB_SyncNotificationAction`.
 - **Surveys / agreements** — `SB_BriefSurvey`(+Question/Answer/Type), `SB_AgreementType`.
-- **Goals / config** — `SB_Goals`, `SB_AppConfig`, `SB_AppType`, `SB_CacheStrategy`, `SB_ViewGranularity`.
+- **Goals / config** — `SB_Goals`, `SB_AppConfig`, `SB_AppType`, `CacheStrategy`, `SB_ViewGranularity`.
 - **Errors / results** — `SB_InsightError`, `SB_RecordStage`, `SB_UnitType`.
 - **Top-level config** — `SB_Environment` (DEVELOPMENT/PRODUCTION), `SB_LogLevel` (V/D/I/W/E),
   `SB_NetworkStatus` (UNREACHABLE/WIFI/CELLULAR/OTHER).
@@ -332,9 +331,10 @@ Called directly on `SensorBioSDK.<method>(…)`. Reads are `suspend fun … : SB
 // Application.onCreate
 SensorBioSDK.initialize(this, SB_AppConfig(appType = SB_AppType.SENSR, appFlavor = BuildConfig.FLAVOR))
 SensorBioSDK.environment = SB_Environment.PRODUCTION
-SensorBioSDK.firebaseTokenProvider = { appPrefs.fcmToken }
-SensorBioSDK.onUnauthenticated = { logoutAndShowLogin() }
 SensorBioSDK.logHandler = { level, msg, args -> Log.println(level.toAndroid(), "SDK", msg ?: "") }
+
+// Involuntary sign-out is now an event, not a supplied callback (§4):
+SensorBioSDK.signOutComplete.onEach { logoutAndShowLogin() }.launchIn(appScope)
 
 // Sign in
 val outcome = SensorBioSDK.signIn(email = email, password = password)
