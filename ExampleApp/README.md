@@ -8,7 +8,7 @@ The pieces that matter:
 
 - **`settings.gradle.kts`** — the single SensorBio line is the Maven repo:
   `maven { url = uri("https://getsensr-io.github.io/mobile_sensorbio_sdk_android_binary/") }`.
-- **`app/build.gradle.kts`** — one dependency: `implementation("com.sensorbio:sensorbio-sdk:0.2.1")`.
+- **`app/build.gradle.kts`** — one dependency: `implementation("com.sensorbio:sensorbio-sdk:0.9.0")`.
   It brings the embedded BLE + edge binaries and the OSS transitive deps (incl. coroutines).
 - **`AndroidManifest.xml`** — BLE runtime permissions (`BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT`, plus
   `ACCESS_FINE_LOCATION` on API < 31). The SDK's own permissions + foreground service merge in.
