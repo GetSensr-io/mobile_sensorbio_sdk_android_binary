@@ -114,6 +114,7 @@ event streams, recording control, device & BLE control (§3.4), and the flat ser
 | `percentSynced` | `StateFlow<Int>` | connected device's sync progress 0–100 (**100 = up to date**); resets to 100 on disconnect |
 | `recordingState` | `SB_RecordingState` | recording FSM (Idle / Recording(elapsed,target) / Finalizing(phase)) |
 | `canFinalize` | `Boolean` | whether the active recording may be finished early |
+| `isRecordingPaused` | `StateFlow<Boolean>` | whether the active recording is paused (drives the Pause/Resume button); `false` off-session |
 | `lastSyncedTemp` | `SB_LiveMetric?` | latest skin-temp reading from sync as a dashboard live-metric (value/unit in the user's °C/°F units); null until first |
 | `exerciseZoneAttributes` | `SB_ExerciseZoneAttributes?` | HR effort-zone config; null when unconfigured, auto-clears on logout |
 | `buttonTaps` | `StateFlow<Int?>` | latest device button-tap count (used during pairing); null until first tap |
@@ -170,6 +171,8 @@ event streams, recording control, device & BLE control (§3.4), and the flat ser
 | `awaitActiveRecordingCompletion` | `suspend () -> Unit` | await a recording the host did **not** start via `record*()` (a process-kill resume) so it can run the survey + surface errors identically; no-op when idle |
 | `finishCurrentRecording` | `suspend () -> Unit` | signal stop + window-sync + schedule submit; outcome surfaces in the in-flight `record*()` await |
 | `cancelCurrentRecording` | `() -> Unit` | abort without submit |
+| `pauseRecording` | `() -> Unit` | pause the running activity/meditation: freeze the elapsed clock + stop the device PPG stream (no biometrics accrue). No-op if not recording / already paused / spot-check |
+| `resumeRecording` | `() -> Unit` | resume a paused recording: record the pause window + restart the device stream. Each paused span is excluded from the session's `active_workout_segments` |
 | `resumeActiveRecording` | `() -> Unit` | resume a recording persisted across a process kill (crash-restore / app launch) |
 | `activeRecording` | `val SB_PersistedRecording?` | crash-restore: a recording persisted across process death |
 | `activeRecordingState` | `val SB_ActiveRecordingInfo?` | flat snapshot of the live activity/meditation recording the engine is driving (for the live screen) |
@@ -192,6 +195,7 @@ events, plus the connected-device identity below.)
 | `userLED` | `suspend (red=…, green=…, blue=…, blink=…, seconds: Int)` | LED control (awaits the BLE write) |
 | `updateFirmware` / `setFirmwareUpdateDeviceId` | `suspend (url, delay?, size?)` *(throws `SB_FirmwareUpdateError(canRetry)`)* / `(deviceId: String?)` | firmware flash (`url` = local file); progress on the `firmwareProgress` event (§3.2). `setFirmwareUpdateDeviceId` is the session-guard seam |
 | `updateConnectedDeviceFirmware` | `(packet: SB_FirmwareVersionPacket) -> Unit` | apply a resolved firmware-version packet to the connected device |
+| `migrateDeviceTypeAfterFlash` | `() -> Unit` | call after a flash completes: if the device was an Alter/AlterV2 migrated onto Sensr firmware, rewrite its stored type to the Sensr equivalent + re-register so the forced-update gate stops re-firing on reconnect. No-op for a same-type flash |
 | `setAskForDeviceResponse` | `(enable: Boolean) -> Unit` | device button-tap prompting |
 | `syncDeviceData` | `suspend (force: Boolean = false) -> …` | trigger a packet-count sync |
 | `airplaneMode` | `suspend () -> Unit` | put the connected device into airplane mode; persists + publishes `deviceAirplaneModeOn`, cleared on next connect |
