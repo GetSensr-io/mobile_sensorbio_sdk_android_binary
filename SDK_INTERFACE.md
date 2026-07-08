@@ -36,7 +36,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:0.9.0")
+    implementation("com.sensorbio:sensorbio-sdk:0.11.0")
 }
 ```
 
@@ -126,6 +126,7 @@ event streams, recording control, device & BLE control (§3.4), and the flat ser
 | `lastSyncd` | `StateFlow<Long?>` | wall-clock epoch (ms) of the last completed sync; survives disconnect; null until first |
 | `networkStatus` | `StateFlow<SB_NetworkStatus>` | phone reachability (UNREACHABLE/WIFI/CELLULAR/OTHER) |
 | `haveUnuploadedPackets` | `StateFlow<Boolean>` | synced packets buffered on disk awaiting upload |
+| `inflightSubmissions` | `StateFlow<List<SB_RecordingSubmissionInfo>>` | finished recordings the server hasn't ingested yet (newest first); host pins them atop the timeline as Uploading…/Processing…/Couldn't-sync cards. Reconcile with `reconcileSubmissions(...)` after each timeline fetch |
 | `webAppCookie` | `StateFlow<String?>` | web-dashboard auth cookie from the login response; set on sign-in, cleared on sign-out, persisted |
 | `userProfileFlow` | `StateFlow<SB_UserProfile?>` | reactive signed-in profile; emits on sign-in / profile / photo / goals / globals refresh / sign-out |
 | `userAppSettings` | `StateFlow<SB_UserAppSettings?>` | reactive app-settings (units/preferences); null until loaded, manual refresh via `refreshUserAppSettings()` |
@@ -255,6 +256,7 @@ Called directly on `SensorBioSDK.<method>(…)`. Reads are `suspend fun … : SB
 | Trending | `fetchRangeHR`/`fetchDailyHR`, `fetchRangeHRV`/`fetchDailyHRV`, `fetchRangeRR`/`fetchDailyRR`, `fetchRangeSpO2`/`fetchDailySpO2`, `fetchCalories`, `fetchSteps`, `fetchDailyActivityDetail`, `fetchRangeRecovery`/`fetchDailyRecovery` *(all take `date: Instant`; `forceRemote` optional)* |
 | Sleep | `fetchSleepDetail(endDate: Instant, endTimestamp)`, `fetchSleepAggregation(date: Instant, …)`, `fetchSleepSessions(date: Instant)`, `deleteSleepSession(endTimestamp, date: Instant)`, `modifySleepSession(onset: Instant, wakeUp: Instant, endTimestamp, date: Instant) -> String`, `addSleepSession(onset: Instant, wakeUp: Instant)` *(writes throw `SB_SleepWriteError`)* |
 | Workouts | `fetchWorkoutDetail(workoutTime: Instant)`, `modifyWorkout(action, date: Instant, timestamp: Instant, …)`, `fetchWorkoutSummary(date: Instant, granularity: SB_SummaryGranularity, workoutName, workoutTime: Instant)`, `fetchWorkoutTimeline(…, direction: SB_PageFetchDirection) -> SB_WorkoutTimelineResult`, `fetchWorkoutRecordingInfo` |
+| In-flight submissions | `reconcileSubmissions(entries: List<SB_WorkoutEntry>)` *(flip matched in-flight cards → processed; call after each `fetchWorkoutTimeline` with `result.items.flatMap { it.entries }`; no network)*, `retrySubmission(startTimestamp)` *(re-drive a FAILED submission)* — observe via `inflightSubmissions` (§3.1) |
 | Activities | `fetchActivityList(force: Boolean = false) -> SB_ActivityRecordingList`, `fetchTrainedActivities()` |
 | Spot-check | `fetchSpotCheckDetails(recordingId, impersonatedUserId?)` *(one-shot suspend read; throws on RPC error)* |
 | Recording meta | `fetchRecordingMetaInfo(type) -> List<SB_RecordingSessionMetaItem>`, `deleteRecordingMeta(id, name, type)` |
@@ -305,7 +307,12 @@ Called directly on `SensorBioSDK.<method>(…)`. Reads are `suspend fun … : SB
   `SB_HrvSample` / `SB_RespiratoryRateSample` / `SB_SnrSample` / `SB_BbiSample` / `SB_PpgSample` /
   `SB_EcgSample` (§3.2); `SB_LiveMetric`; `SB_HRMData`(+`SB_HRMCategory`); `SB_TimeValuePoint`, `SB_DateValuePoint`,
   `SB_PoincarePlotGraph`, `SB_BarGraph`, `SB_CalorieMetric`, `SB_CaloriesTrending`, `SB_CardioStats`.
-- **Recovery** — `SB_RecoveryRange*`, `SB_DailyRecovery*`, `SB_RecoveryScoreFactor/Section`.
+- **Recovery** — `SB_RecoveryRange*`, `SB_DailyRecovery*`, `SB_RecoveryScoreFactor/Section`. Each
+  `SB_RecoveryScoreFactor` reports its `percentile` (0–100) and a pre-computed `scoreValue` — the
+  factor's weighted contribution under `0.4·HRV + 0.4·RHR + 0.1·Sleep Efficiency + 0.1·Sleep
+  Duration`; colors are **not** returned (the app derives them from the percentile). Both
+  `SB_DailyRecoveryTrending` and `SB_RecoveryRangeTrending` also carry the signed-in user's
+  `joinedDate` (from the profile, not the recovery payload) so the app can describe the averaging window.
 - **Dashboard** — `SB_DashboardData` + ~20 card/metric types (`SB_DashboardMetric`,
   `SB_DashboardInsight`, `SB_DashboardGradientCard`, `SB_DashboardSleepItem`, …).
 - **Insights / population** — `SB_NewInsights`, `SB_InsightItem`, `SB_InsightFeedback`,
