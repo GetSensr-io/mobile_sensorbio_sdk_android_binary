@@ -36,11 +36,11 @@ dependencyResolutionManagement {
 
 ```kotlin
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:0.9.0")
+    implementation("com.sensorbio:sensorbio-sdk:0.12.0")
 }
 ```
 
-(Groovy DSL is equivalent: `maven { url '…' }` + `implementation 'com.sensorbio:sensorbio-sdk:0.9.0'`.)
+(Groovy DSL is equivalent: `maven { url '…' }` + `implementation 'com.sensorbio:sensorbio-sdk:0.12.0'`.)
 
 ## What you get
 

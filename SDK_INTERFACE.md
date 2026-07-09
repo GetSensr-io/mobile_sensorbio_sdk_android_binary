@@ -12,7 +12,7 @@ This document describes the **public** customer-facing surface of the SensorBio 
 
 > **Visibility note.** This covers the customer-facing API only. SDK-internal symbols and first-party
 > (`internal`-flavor) API are not part of the published binary and are not documented in the customer
-> copy. SDK `version = "0.9.0"`.
+> copy. SDK `version = "0.12.0"`.
 
 The design rule: **the app integrates with ONLY the `SensorBioSDK` object.** Everything else the host
 needs is either a domain type it receives (`SB_*`) or a **hook** it supplies (§4).
