@@ -36,7 +36,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:0.11.0")
+    implementation("com.sensorbio:sensorbio-sdk:0.12.0")
 }
 ```
 
@@ -252,7 +252,7 @@ Called directly on `SensorBioSDK.<method>(…)`. Reads are `suspend fun … : SB
 
 | Domain | Methods (flat on `SensorBioSDK`) |
 |---|---|
-| Dashboard | `fetchDashboardData(date: Instant, tzOffset, forceRemote)`, `clearDashboardData(date: Instant)` |
+| Dashboard | `fetchDashboardData(date: Instant, tzOffset, forceRemote)`, `cachedDashboardData(date: Instant, tzOffset)` *(cache-only peek, null on miss — no network; for stale-while-revalidate paint)*, `clearDashboardData(date: Instant)` |
 | Trending | `fetchRangeHR`/`fetchDailyHR`, `fetchRangeHRV`/`fetchDailyHRV`, `fetchRangeRR`/`fetchDailyRR`, `fetchRangeSpO2`/`fetchDailySpO2`, `fetchCalories`, `fetchSteps`, `fetchDailyActivityDetail`, `fetchRangeRecovery`/`fetchDailyRecovery` *(all take `date: Instant`; `forceRemote` optional)* |
 | Sleep | `fetchSleepDetail(endDate: Instant, endTimestamp)`, `fetchSleepAggregation(date: Instant, …)`, `fetchSleepSessions(date: Instant)`, `deleteSleepSession(endTimestamp, date: Instant)`, `modifySleepSession(onset: Instant, wakeUp: Instant, endTimestamp, date: Instant) -> String`, `addSleepSession(onset: Instant, wakeUp: Instant)` *(writes throw `SB_SleepWriteError`)* |
 | Workouts | `fetchWorkoutDetail(workoutTime: Instant)`, `modifyWorkout(action, date: Instant, timestamp: Instant, …)`, `fetchWorkoutSummary(date: Instant, granularity: SB_SummaryGranularity, workoutName, workoutTime: Instant)`, `fetchWorkoutTimeline(…, direction: SB_PageFetchDirection) -> SB_WorkoutTimelineResult`, `fetchWorkoutRecordingInfo` |
