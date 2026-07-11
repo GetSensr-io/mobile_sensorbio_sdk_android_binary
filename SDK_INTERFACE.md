@@ -12,7 +12,7 @@ This document describes the **public** customer-facing surface of the SensorBio 
 
 > **Visibility note.** This covers the customer-facing API only. SDK-internal symbols and first-party
 > (`internal`-flavor) API are not part of the published binary and are not documented in the customer
-> copy. SDK `version = "0.9.0"`.
+> copy. SDK `version = "0.13.0"`.
 
 The design rule: **the app integrates with ONLY the `SensorBioSDK` object.** Everything else the host
 needs is either a domain type it receives (`SB_*`) or a **hook** it supplies (§4).
@@ -36,7 +36,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:0.12.0")
+    implementation("com.sensorbio:sensorbio-sdk:0.13.0")
 }
 ```
 
@@ -254,7 +254,7 @@ Called directly on `SensorBioSDK.<method>(…)`. Reads are `suspend fun … : SB
 |---|---|
 | Dashboard | `fetchDashboardData(date: Instant, tzOffset, forceRemote)`, `cachedDashboardData(date: Instant, tzOffset)` *(cache-only peek, null on miss — no network; for stale-while-revalidate paint)*, `clearDashboardData(date: Instant)` |
 | Trending | `fetchRangeHR`/`fetchDailyHR`, `fetchRangeHRV`/`fetchDailyHRV`, `fetchRangeRR`/`fetchDailyRR`, `fetchRangeSpO2`/`fetchDailySpO2`, `fetchCalories`, `fetchSteps`, `fetchDailyActivityDetail`, `fetchRangeRecovery`/`fetchDailyRecovery` *(all take `date: Instant`; `forceRemote` optional)* |
-| Sleep | `fetchSleepDetail(endDate: Instant, endTimestamp)`, `fetchSleepAggregation(date: Instant, …)`, `fetchSleepSessions(date: Instant)`, `deleteSleepSession(endTimestamp, date: Instant)`, `modifySleepSession(onset: Instant, wakeUp: Instant, endTimestamp, date: Instant) -> String`, `addSleepSession(onset: Instant, wakeUp: Instant)` *(writes throw `SB_SleepWriteError`)* |
+| Sleep | `fetchSleepDetail(endDate: Instant, endTimestamp, forceRemote?)`, `fetchSleepAggregation(date: Instant, …, forceRemote?)`, `fetchSleepSessions(date: Instant)`, `deleteSleepSession(endTimestamp, date: Instant)`, `modifySleepSession(onset: Instant, wakeUp: Instant, endTimestamp, date: Instant) -> String`, `addSleepSession(onset: Instant, wakeUp: Instant)` *(writes throw `SB_SleepWriteError`)* |
 | Workouts | `fetchWorkoutDetail(workoutTime: Instant)`, `modifyWorkout(action, date: Instant, timestamp: Instant, …)`, `fetchWorkoutSummary(date: Instant, granularity: SB_SummaryGranularity, workoutName, workoutTime: Instant)`, `fetchWorkoutTimeline(…, direction: SB_PageFetchDirection) -> SB_WorkoutTimelineResult`, `fetchWorkoutRecordingInfo` |
 | In-flight submissions | `reconcileSubmissions(entries: List<SB_WorkoutEntry>)` *(flip matched in-flight cards → processed; call after each `fetchWorkoutTimeline` with `result.items.flatMap { it.entries }`; no network)*, `retrySubmission(startTimestamp)` *(re-drive a FAILED submission)* — observe via `inflightSubmissions` (§3.1) |
 | Activities | `fetchActivityList(force: Boolean = false) -> SB_ActivityRecordingList`, `fetchTrainedActivities()` |
@@ -270,6 +270,21 @@ Called directly on `SensorBioSDK.<method>(…)`. Reads are `suspend fun … : SB
 | Recording submit | `createActivitySession(activityName, startEpochMs, durationSecs)` *(suspend; manual after-the-fact log)* |
 | Session | `signIn(email, password) -> SB_SignInOutcome`, `signOut()`, `persistUser`, `deleteAccount`, `clearSession`, `clearPrefsOnLogout` *(signed-in identity is observable — see §3.1 `session`/`userProfileFlow`)* |
 | Server writes | `reprocessSleep`, `updateUserDeviceInfo`, `uploadUserPhoto` *(→ URL)*, `deleteUserPhoto` |
+
+**Read-cache policy** (date-keyed reads — dashboard, trending, sleep, activity, etc.): a three-case
+disk cache, mirroring iOS `cachedRead`.
+- **Today** — always fetched fresh while online; the successful response is cached, and a fetch
+  failure falls back to the last cached payload (so a cold offline open shows stale today rather
+  than a blank/error).
+- **Past date, final cache** — served straight from disk with no network. A cache entry is *final*
+  only once it was written on a calendar day strictly *after* the date it holds.
+- **Past date, provisional (or missing) cache** — an entry captured while that date was still
+  "today" is provisional (the day kept accumulating data afterwards — a late device sync, a sleep
+  the server scores hours later), so the first view of the day *after it has passed* refetches once
+  to finalize it; on failure it falls back to the provisional snapshot. This is the SB-1112 fix.
+
+`forceRemote = true` (pull-to-refresh) bypasses every cache shortcut and always fetches live,
+falling back to cache only on failure.
 
 
 ---
