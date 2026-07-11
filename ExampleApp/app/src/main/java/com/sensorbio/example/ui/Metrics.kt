@@ -221,8 +221,8 @@ suspend fun loadMetric(kind: MetricKind, date: Instant, grain: Grain): MetricDat
                 listOf("Resting HR" to "${g.restingHr.toInt()} bpm", "Sleep" to secsToHm(g.sleepTimeSeconds.toInt()),
                     "Variation" to "%.0f%%".format(g.variationPercentage)),
                 listOf(MetricSection("Score factors", null,
-                    // factor value is a 0–1 fraction → render as a percentage
-                    g.scoreFactors.map { DataPoint(it.title.ifBlank { "Factor" }, "%.0f%%".format(it.value * 100)) },
+                    // percentile is already 0–100 → render as a percentage
+                    g.scoreFactors.map { DataPoint(it.title.ifBlank { "Factor" }, "%.0f%%".format(it.percentile)) },
                     monospaceLabels = false)),
             )
         } else {
