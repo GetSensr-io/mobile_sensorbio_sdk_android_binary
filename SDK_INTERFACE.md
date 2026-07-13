@@ -36,7 +36,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:0.13.0")
+    implementation("com.sensorbio:sensorbio-sdk:0.14.0")
 }
 ```
 
@@ -194,6 +194,7 @@ events, plus the connected-device identity below.)
 | `removeDeviceFromPairedDevices` | `(id: String) -> Unit` | unpair |
 | `reset` | `() -> Unit` | factory-reset the device |
 | `userLED` | `suspend (red=…, green=…, blue=…, blink=…, seconds: Int)` | LED control (awaits the BLE write) |
+| `hapticMotor` | `suspend (pulse: Boolean = false, intensity: Int, seconds: Int)` | run the haptic motor (awaits the BLE write). `pulse` = pulse vs. solid (haptic analogue of `blink`); `intensity` is 0..100% |
 | `updateFirmware` / `setFirmwareUpdateDeviceId` | `suspend (url, delay?, size?)` *(throws `SB_FirmwareUpdateError(canRetry)`)* / `(deviceId: String?)` | firmware flash (`url` = local file); progress on the `firmwareProgress` event (§3.2). `setFirmwareUpdateDeviceId` is the session-guard seam |
 | `updateConnectedDeviceFirmware` | `(packet: SB_FirmwareVersionPacket) -> Unit` | apply a resolved firmware-version packet to the connected device |
 | `migrateDeviceTypeAfterFlash` | `() -> Unit` | call after a flash completes: if the device was an Alter/AlterV2 migrated onto Sensr firmware, rewrite its stored type to the Sensr equivalent + re-register so the forced-update gate stops re-firing on reconnect. No-op for a same-type flash |
@@ -269,7 +270,7 @@ Called directly on `SensorBioSDK.<method>(…)`. Reads are `suspend fun … : SB
 | Account | `createAccount(SB_CreateAccountRequest)`, `updateUserProfile(SB_UserProfileUpdate)`, `changePassword(currentPassword, newPassword)`, `requestPasswordReset`, `checkEmailAvailability`, `validateAccountRequirements(SB_ValidateAccountRequirementsRequest) -> SB_ValidateAccountRequirementsResult`, `refreshUser`, `hydrateSession`, `generateTemporaryAuthToken() -> String?`, `registerApp(deviceId)` |
 | Recording submit | `createActivitySession(activityName, startEpochMs, durationSecs)` *(suspend; manual after-the-fact log)* |
 | Session | `signIn(email, password) -> SB_SignInOutcome`, `signOut()`, `persistUser`, `deleteAccount`, `clearSession`, `clearPrefsOnLogout` *(signed-in identity is observable — see §3.1 `session`/`userProfileFlow`)* |
-| Server writes | `reprocessSleep`, `updateUserDeviceInfo`, `uploadUserPhoto` *(→ URL)*, `deleteUserPhoto` |
+| Server writes | `reprocessSleep` *(suspend; user-tapped, throws on failure)*, `updateUserDeviceInfo`, `uploadUserPhoto` *(→ URL)*, `deleteUserPhoto` |
 
 **Read-cache policy** (date-keyed reads — dashboard, trending, sleep, activity, etc.): a three-case
 disk cache, mirroring iOS `cachedRead`.
