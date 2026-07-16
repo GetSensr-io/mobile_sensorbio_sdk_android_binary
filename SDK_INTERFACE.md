@@ -36,7 +36,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:0.14.0")
+    implementation("com.sensorbio:sensorbio-sdk:0.14.1")
 }
 ```
 
