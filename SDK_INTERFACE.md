@@ -36,7 +36,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:0.14.1")
+    implementation("com.sensorbio:sensorbio-sdk:0.14.2")
 }
 ```
 
@@ -153,7 +153,7 @@ event streams, recording control, device & BLE control (§3.4), and the flat ser
 | `sleepStored` | `Unit` | a sleep session was decoded + stored on-device |
 | `sleepUploaded` | `Unit` | a sleep session finished uploading; host refreshes affected UI (e.g. dashboard) |
 | `sleepDetected` | `SB_DetectedSleep` | a valid auto-detected on-device sleep session was finalized (start/end epoch ms); host prompts the post-sleep survey |
-| `deviceDiscovered` | `SB_DiscoveredDevice` | a device surfaced during a scan (pairing); lean payload (`macAddress`, `name`) |
+| `deviceDiscovered` | `SB_DiscoveredDevice` | a device surfaced during a scan (pairing); lean payload (`macAddress`, `name`, `typeName` — coarse advertised family) |
 | `deviceConnected` | `Unit` | raw BLE link came up (signal only; read identity from the facade) |
 | `deviceFullyConfigured` | `Unit` | the device finished full configuration and is usable (rising edge of `isFullyConfigured`) |
 | `deviceDisconnected` | `String` | the device disconnected; payload = macAddress |
