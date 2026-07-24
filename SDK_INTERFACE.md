@@ -36,7 +36,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:0.14.2")
+    implementation("com.sensorbio:sensorbio-sdk:0.15.0")
 }
 ```
 
@@ -269,8 +269,75 @@ Called directly on `SensorBioSDK.<method>(…)`. Reads are `suspend fun … : SB
 | Agreements | `shouldRequestAgreement`, `acceptAgreements(tosVersion, healthDataVersion)`, `acceptCurrentAgreements` *(suspend)* |
 | Account | `createAccount(SB_CreateAccountRequest)`, `updateUserProfile(SB_UserProfileUpdate)`, `changePassword(currentPassword, newPassword)`, `requestPasswordReset`, `checkEmailAvailability`, `validateAccountRequirements(SB_ValidateAccountRequirementsRequest) -> SB_ValidateAccountRequirementsResult`, `refreshUser`, `hydrateSession`, `generateTemporaryAuthToken() -> String?`, `registerApp(deviceId)` |
 | Recording submit | `createActivitySession(activityName, startEpochMs, durationSecs)` *(suspend; manual after-the-fact log)* |
-| Session | `signIn(email, password) -> SB_SignInOutcome`, `signOut()`, `persistUser`, `deleteAccount`, `clearSession`, `clearPrefsOnLogout` *(signed-in identity is observable — see §3.1 `session`/`userProfileFlow`)* |
+| Session | `signIn(email, password) -> SB_SignInOutcome`, `registerUser(orgId, sdkKey, userId, email?, sex?, birthdayYear?, birthdayMonth?, birthdayDay?, heightCm?, weightKg?, imperialUnits, activationCode?) -> SB_RegisterUserOutcome` *(SDK-key register-or-login — see §5.1)*, `signOut()`, `persistUser`, `deleteAccount`, `clearSession`, `clearPrefsOnLogout` *(signed-in identity is observable — see §3.1 `session`/`userProfileFlow`)* |
 | Server writes | `reprocessSleep` *(suspend; user-tapped, throws on failure)*, `updateUserDeviceInfo`, `uploadUserPhoto` *(→ URL)*, `deleteUserPhoto` |
+
+> **`location` is a full-replace field.** `SB_UserProfileUpdate.location` and `SB_UserProfile.location`
+> name the same value — the user's location (city / country). It maps to a wire field historically
+> named `zipcode`. `updateUserProfile` replaces the whole profile, so read the current value from
+> `userProfileFlow.value?.location` and pass it back in on every update; sending `""` (or `null`)
+> overwrites the stored value on the server.
+
+### 5.1 SDK-key registration (`registerUser`)
+
+For third-party apps embedding the SDK, `registerUser` is a **register-or-login** entry point for
+users your app has already authenticated by its own means (your login, SSO, OAuth — the SDK doesn't
+care which). These users have **no** Sensor Bio email/password. On success the SDK persists the
+returned session and publishes `session` / `userProfileFlow`, exactly like `signIn`.
+
+- **`orgId` + `sdkKey`** — the server-issued organization credentials for your integration (from your
+  Sensor Bio dashboard). The backend validates that the key is active and belongs to `orgId`.
+- **`userId`** — your own stable identifier for the end-user (`client_sdk_user_id`). The first call for
+  a given `userId` registers; subsequent calls log in. It is also recorded as the user's **username**
+  (visible in the web dashboard).
+- **`email`** *(optional)* — a contact email. Omitted if null/blank; when supplied it is recorded on
+  the backend as the user's contact email (never used as the login identity).
+- **`sex` / `birthdayYear`+`birthdayMonth`+`birthdayDay` / `heightCm` / `weightKg` / `imperialUnits`**
+  *(optional)* — demographics. **Any omitted value is filled with a dummy** before the request is sent:
+  the platform requires height/weight/sex/birthday to compute higher-level metrics (recovery, calories,
+  sleep scoring, …), so a user with none would break downstream processing. Pass real values when you
+  have them (a partial birthday — not all of year/month/day — is treated as omitted).
+- **`activationCode`** *(optional)* — redeems a device-subscription activation code during a first
+  registration (same flow as `createAccount`).
+
+Every failure resolves to a typed `SB_RegisterUserOutcome` — it does not throw on a register error.
+`Failed` carries a typed `SB_ServiceErrorCode` (e.g. `INVALID_ARGUMENT` for missing metadata,
+`PERMISSION_DENIED` for an inactive SDK key), and no raw gRPC message string ever crosses the boundary.
+
+```kotlin
+when (val outcome = SensorBioSDK.registerUser(orgId = orgId, sdkKey = sdkKey, userId = userId)) {
+    is SB_RegisterUserOutcome.Success               -> routeToHome(outcome.session)
+    SB_RegisterUserOutcome.ClientSdkUserIdAlreadyInUse -> showError("This user id is already in use.")
+    SB_RegisterUserOutcome.DeviceSubscriptionRequired,
+    SB_RegisterUserOutcome.OrgBillingPeriodInactive -> showError("No active subscription — contact your administrator.")
+    is SB_RegisterUserOutcome.Failed                -> showError("Something went wrong. (${outcome.code.name})")
+    else                                            -> showError("Could not register: $outcome")
+}
+```
+
+```kotlin
+sealed class SB_RegisterUserOutcome {
+    data class Success(val session: SB_Session) : SB_RegisterUserOutcome()
+    object InvalidClientSdkUserId : SB_RegisterUserOutcome()
+    object ClientSdkUserIdAlreadyInUse : SB_RegisterUserOutcome()
+    object InvalidHeight : SB_RegisterUserOutcome()
+    object InvalidWeight : SB_RegisterUserOutcome()
+    object InvalidBirthday : SB_RegisterUserOutcome()
+    object InvalidEmail : SB_RegisterUserOutcome()
+    object InvalidAccessCode : SB_RegisterUserOutcome()
+    object AccessCodeAlreadyInUse : SB_RegisterUserOutcome()
+    object DeviceSerialNumberRequired : SB_RegisterUserOutcome()
+    object DeviceSerialNumberMismatch : SB_RegisterUserOutcome()
+    object DeviceSubscriptionRequired : SB_RegisterUserOutcome()
+    object OrgBillingPeriodInactive : SB_RegisterUserOutcome()
+    data class Failed(val code: SB_ServiceErrorCode) : SB_RegisterUserOutcome()
+}
+```
+
+> SDK users authenticate with the new-auth `session_auth_token` only — there is no legacy `auth_token`
+> / web-app cookie for them. The SDK stores the session's access + refresh tokens and refreshes them
+> automatically, so subsequent authenticated calls (and `signOut()`) behave exactly as for a normal
+> sign-in.
 
 **Read-cache policy** (date-keyed reads — dashboard, trending, sleep, activity, etc.): a three-case
 disk cache, mirroring iOS `cachedRead`.
@@ -295,7 +362,7 @@ falling back to cache only on failure.
 ~276 public `SB_*` types the facade returns/accepts. Grouped index:
 
 - **User / auth** — `SB_UserProfile`, `SB_UserDemographics`, `SB_UserAppSettings`, `SB_Session`,
-  `SB_SignInOutcome`, `SB_CreateAccountOutcome`, `SB_ChangePasswordOutcome`,
+  `SB_SignInOutcome` (+`SB_ServiceErrorCode`), `SB_RegisterUserOutcome`, `SB_CreateAccountOutcome`, `SB_ChangePasswordOutcome`,
   `SB_EmailAvailabilityOutcome`, `SB_UpdateUserProfileOutcome`, `SB_RequestPasswordResetOutcome`,
   `SB_AgreementCheck`, `SB_Gender`, `SB_CreateAccountRequest`, `SB_UserProfileUpdate`,
   `SB_ValidateAccountRequirementsRequest`, `SB_ValidateAccountRequirementsResult`,
