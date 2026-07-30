@@ -12,7 +12,7 @@ This document describes the **public** customer-facing surface of the SensorBio 
 
 > **Visibility note.** This covers the customer-facing API only. SDK-internal symbols and first-party
 > (`internal`-flavor) API are not part of the published binary and are not documented in the customer
-> copy. SDK `version = "0.13.0"`.
+> copy. SDK `version = "0.17.0"`.
 
 The design rule: **the app integrates with ONLY the `SensorBioSDK` object.** Everything else the host
 needs is either a domain type it receives (`SB_*`) or a **hook** it supplies (§4).
@@ -36,7 +36,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:0.16.0")
+    implementation("com.sensorbio:sensorbio-sdk:0.17.0")
 }
 ```
 
@@ -224,6 +224,7 @@ events, plus the connected-device identity below.)
 | Member | Type | Notes |
 |---|---|---|
 | `remoteGlobals` | `SB_RemoteGlobals` | goals/branding globals |
+| `rawDataEnabled` | `val Boolean` | whether raw sensor logging is active (sensor-config raw channel or legacy `rawSensorDataLogging`); raw logging fills device storage faster, so the host shortens its "haven't synced" reminder (§3.2 `syncNotificationActions`) when true |
 | `attachRemoteGlobals(owner)` / `refreshGlobalState()` | — / `suspend (): SB_OrgMembership` | globals lifecycle auto-refresh / manual refresh returning org membership |
 | `deviceId` | `val String` | SDK-owned stable per-install id (generated + persisted in `sdk_prefs`); read-only — the host reads it only to tag its own analytics with the same id |
 | `clearLocalRecordingState()` | — | recording-state lifecycle |
@@ -254,6 +255,7 @@ Called directly on `SensorBioSDK.<method>(…)`. Reads are `suspend fun … : SB
 | Domain | Methods (flat on `SensorBioSDK`) |
 |---|---|
 | Dashboard | `fetchDashboardData(date: Instant, tzOffset, forceRemote)`, `cachedDashboardData(date: Instant, tzOffset)` *(cache-only peek, null on miss — no network; for stale-while-revalidate paint)*, `clearDashboardData(date: Instant)` |
+| Skin temperature | `getSkinTemperature(date: Instant) -> SB_SkinTemperature?` *(on-device read — aggregates the local `temperature_data` rows for the calendar day into min/max/average + ascending points, all Celsius; no network; null when the day has no points. App applies °C/°F for display.)* |
 | Trending | `fetchRangeHR`/`fetchDailyHR`, `fetchRangeHRV`/`fetchDailyHRV`, `fetchRangeRR`/`fetchDailyRR`, `fetchRangeSpO2`/`fetchDailySpO2`, `fetchCalories`, `fetchSteps`, `fetchDailyActivityDetail`, `fetchRangeRecovery`/`fetchDailyRecovery` *(all take `date: Instant`; `forceRemote` optional)* |
 | Sleep | `fetchSleepDetail(endDate: Instant, endTimestamp, forceRemote?)`, `fetchSleepAggregation(date: Instant, …, forceRemote?)`, `fetchSleepSessions(date: Instant)`, `deleteSleepSession(endTimestamp, date: Instant)`, `modifySleepSession(onset: Instant, wakeUp: Instant, endTimestamp, date: Instant) -> String`, `addSleepSession(onset: Instant, wakeUp: Instant)` *(writes throw `SB_SleepWriteError`)* |
 | Workouts | `fetchWorkoutDetail(workoutTime: Instant)`, `modifyWorkout(action, date: Instant, timestamp: Instant, …)`, `fetchWorkoutSummary(date: Instant, granularity: SB_SummaryGranularity, workoutName, workoutTime: Instant)`, `fetchWorkoutTimeline(…, direction: SB_PageFetchDirection) -> SB_WorkoutTimelineResult`, `fetchWorkoutRecordingInfo` |
@@ -389,7 +391,8 @@ falling back to cache only on failure.
   (`SB_HR*`, `SB_HRV*`, `SB_SpO2*`, `SB_RR*`); live per-sample stream payloads `SB_HeartRateSample` /
   `SB_HrvSample` / `SB_RespiratoryRateSample` / `SB_SnrSample` / `SB_BbiSample` / `SB_PpgSample` /
   `SB_EcgSample` (§3.2); `SB_LiveMetric`; `SB_HRMData`(+`SB_HRMCategory`); `SB_TimeValuePoint`, `SB_DateValuePoint`,
-  `SB_PoincarePlotGraph`, `SB_BarGraph`, `SB_CalorieMetric`, `SB_CaloriesTrending`, `SB_CardioStats`.
+  `SB_PoincarePlotGraph`, `SB_BarGraph`, `SB_CalorieMetric`, `SB_CaloriesTrending`, `SB_CardioStats`;
+  `SB_SkinTemperature`(+`SB_SkinTemperature.Point`) — on-device day summary from `getSkinTemperature(date)`, all Celsius.
 - **Recovery** — `SB_RecoveryRange*`, `SB_DailyRecovery*`, `SB_RecoveryScoreFactor/Section`. Each
   `SB_RecoveryScoreFactor` reports its `percentile` (0–100) and a pre-computed `scoreValue` — the
   factor's weighted contribution under `0.4·HRV + 0.4·RHR + 0.1·Sleep Efficiency + 0.1·Sleep
