@@ -12,7 +12,7 @@ This document describes the **public** customer-facing surface of the SensorBio 
 
 > **Visibility note.** This covers the customer-facing API only. SDK-internal symbols and first-party
 > (`internal`-flavor) API are not part of the published binary and are not documented in the customer
-> copy. SDK `version = "0.17.0"`.
+> copy. SDK `version = "1.0.0"`.
 
 The design rule: **the app integrates with ONLY the `SensorBioSDK` object.** Everything else the host
 needs is either a domain type it receives (`SB_*`) or a **hook** it supplies (§4).
@@ -36,7 +36,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:0.17.0")
+    implementation("com.sensorbio:sensorbio-sdk:1.0.0")
 }
 ```
 
@@ -92,7 +92,9 @@ Plain `var`s the host sets once after `initialize`:
 
 App identity is set-once config passed into `initialize(context, SB_AppConfig(...))` — `appType`,
 `appFlavor`, `appDisplayName`, `enableCrashlytics`. App **version + build** are self-read from the host
-`PackageManager` at init.
+`PackageManager` at init. `SB_AppConfig.firmware` (`SB_FirmwareConfig`: S3 bucket + Cognito pool) is the
+optional firmware-fetch config consumed by `getFirmware` — set on first-party `internal` builds only,
+null (and ignored) in customer builds.
 
 ---
 
@@ -195,7 +197,7 @@ events, plus the connected-device identity below.)
 | `reset` | `() -> Unit` | factory-reset the device |
 | `userLED` | `suspend (red=…, green=…, blue=…, blink=…, seconds: Int)` | LED control (awaits the BLE write) |
 | `hapticMotor` | `suspend (pulse: Boolean = false, intensity: Int, seconds: Int)` | run the haptic motor (awaits the BLE write). `pulse` = pulse vs. solid (haptic analogue of `blink`); `intensity` is 0..100% |
-| `updateFirmware` / `setFirmwareUpdateDeviceId` | `suspend (url, delay?, size?)` *(throws `SB_FirmwareUpdateError(canRetry)`)* / `(deviceId: String?)` | firmware flash (`url` = local file); progress on the `firmwareProgress` event (§3.2). `setFirmwareUpdateDeviceId` is the session-guard seam |
+| `updateFirmware` / `setFirmwareUpdateDeviceId` | `suspend (url, delay?, size?)` **or** `suspend (data: ByteArray, delay?, size?)` *(throws `SB_FirmwareUpdateError(canRetry)`)* / `(deviceId: String?)` | firmware flash — `url` = a local file, or pass `data` = the bytes from `getFirmware` (SDK temp-files them internally); progress on the `firmwareProgress` event (§3.2). `setFirmwareUpdateDeviceId` is the session-guard seam |
 | `updateConnectedDeviceFirmware` | `(packet: SB_FirmwareVersionPacket) -> Unit` | apply a resolved firmware-version packet to the connected device |
 | `migrateDeviceTypeAfterFlash` | `() -> Unit` | call after a flash completes: if the device was an Alter/AlterV2 migrated onto Sensr firmware, rewrite its stored type to the Sensr equivalent + re-register so the forced-update gate stops re-firing on reconnect. No-op for a same-type flash |
 | `setAskForDeviceResponse` | `(enable: Boolean) -> Unit` | device button-tap prompting |
