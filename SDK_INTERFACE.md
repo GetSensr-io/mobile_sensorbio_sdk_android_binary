@@ -36,7 +36,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:1.0.0")
+    implementation("com.sensorbio:sensorbio-sdk:1.1.0")
 }
 ```
 
@@ -252,14 +252,14 @@ through the observable event streams (§3.2) — the host **observes**, it does 
 
 ## 5. Server APIs (flat on the facade)
 
-Called directly on `SensorBioSDK.<method>(…)`. Reads are `suspend fun … : SB_…`.
+Called directly on `SensorBioSDK.<method>(…)`. One-shot reads are `suspend fun … : SB_…` (pull-to-refresh / single fetch). The cache-backed reads additionally expose an **`…Updates(…): Flow<SB_…>`** sibling (iOS-parity `…Updates` → `AsyncThrowingStream`): a stale-while-revalidate stream that emits the last-known cached value immediately, then the authoritative value (fresh server value, or the final/stale cache per the cache policy — final-past served from disk, today always fetched, `forceRemote` bypass, stale-on-failure fallback). `collect { … }` one of these from a ViewModel instead of pairing a cache peek with a fetch. The `suspend cachedX(…)` peeks were removed in favour of the streams.
 
 | Domain | Methods (flat on `SensorBioSDK`) |
 |---|---|
-| Dashboard | `fetchDashboardData(date: Instant, tzOffset, forceRemote)`, `cachedDashboardData(date: Instant, tzOffset)` *(cache-only peek, null on miss — no network; for stale-while-revalidate paint)*, `clearDashboardData(date: Instant)` |
+| Dashboard | `fetchDashboardData(date: Instant, tzOffset, forceRemote)`, `dashboardUpdates(date: Instant, tzOffset, forceRemote): Flow<SB_DashboardData>` *(stale-then-fresh stream — replaces the removed `cachedDashboardData` peek)*, `clearDashboardData(date: Instant)` |
 | Skin temperature | `getSkinTemperature(date: Instant) -> SB_SkinTemperature?` *(on-device read — aggregates the local `temperature_data` rows for the calendar day into min/max/average + ascending points, all Celsius; no network; null when the day has no points. App applies °C/°F for display.)* |
-| Trending | `fetchRangeHR`/`fetchDailyHR`, `fetchRangeHRV`/`fetchDailyHRV`, `fetchRangeRR`/`fetchDailyRR`, `fetchRangeSpO2`/`fetchDailySpO2`, `fetchCalories`, `fetchSteps`, `fetchDailyActivityDetail`, `fetchRangeRecovery`/`fetchDailyRecovery` *(all take `date: Instant`; `forceRemote` optional)* |
-| Sleep | `fetchSleepDetail(endDate: Instant, endTimestamp, forceRemote?)`, `fetchSleepAggregation(date: Instant, …, forceRemote?)`, `fetchSleepSessions(date: Instant)`, `deleteSleepSession(endTimestamp, date: Instant)`, `modifySleepSession(onset: Instant, wakeUp: Instant, endTimestamp, date: Instant) -> String`, `addSleepSession(onset: Instant, wakeUp: Instant)` *(writes throw `SB_SleepWriteError`)* |
+| Trending | `fetchRangeHR`/`fetchDailyHR`, `fetchRangeHRV`/`fetchDailyHRV`, `fetchRangeRR`/`fetchDailyRR`, `fetchRangeSpO2`/`fetchDailySpO2`, `fetchCalories`, `fetchSteps`, `fetchDailyActivityDetail`, `fetchRangeRecovery`/`fetchDailyRecovery` *(all take `date: Instant`; `forceRemote` optional)*. Stale-then-fresh `Flow` siblings: `rangeHRUpdates`/`dailyHRUpdates`, `rangeHRVUpdates`/`dailyHRVUpdates`, `rangeRRUpdates`/`dailyRRUpdates`, `rangeSpO2Updates`/`dailySpO2Updates`, `caloriesUpdates`, `stepsUpdates`, `dailyActivityDetailUpdates`, `rangeRecoveryUpdates`/`dailyRecoveryUpdates` |
+| Sleep | `fetchSleepDetail(endDate: Instant, endTimestamp, forceRemote?)`, `fetchSleepAggregation(date: Instant, …, forceRemote?)` *(+ `sleepDetailUpdates(endDate: Instant, endTimestamp, forceRemote?): Flow<SB_SleepDetailDay>` / `sleepAggregationUpdates(date: Instant, …, forceRemote?): Flow<SB_SleepDetailAggregated>` stale-then-fresh streams)*, `fetchSleepSessions(date: Instant)`, `deleteSleepSession(endTimestamp, date: Instant)`, `modifySleepSession(onset: Instant, wakeUp: Instant, endTimestamp, date: Instant) -> String`, `addSleepSession(onset: Instant, wakeUp: Instant)` *(writes throw `SB_SleepWriteError`)* |
 | Workouts | `fetchWorkoutDetail(workoutTime: Instant)`, `modifyWorkout(action, date: Instant, timestamp: Instant, …)`, `fetchWorkoutSummary(date: Instant, granularity: SB_SummaryGranularity, workoutName, workoutTime: Instant)`, `fetchWorkoutTimeline(…, direction: SB_PageFetchDirection) -> SB_WorkoutTimelineResult`, `fetchWorkoutRecordingInfo` |
 | In-flight submissions | `reconcileSubmissions(entries: List<SB_WorkoutEntry>)` *(flip matched in-flight cards → processed; call after each `fetchWorkoutTimeline` with `result.items.flatMap { it.entries }`; no network)*, `retrySubmission(startTimestamp)` *(re-drive a FAILED submission)* — observe via `inflightSubmissions` (§3.1) |
 | Activities | `fetchActivityList(force: Boolean = false) -> SB_ActivityRecordingList`, `fetchTrainedActivities()` |
