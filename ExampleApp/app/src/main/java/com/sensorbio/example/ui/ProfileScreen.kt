@@ -113,7 +113,7 @@ fun ProfileScreen(usernameOrEmail: String) {
                                     weightKg = weight.toFloatOrNull() ?: p.weightKG,
                                     walkingStrideLength = p.walkingStrideLengthCM,
                                     runningStrideLength = p.runningStrideLengthCM,
-                                    zipcode = null,
+                                    location = null,
                                     vo2Max = p.vo2Max,
                                     maxHr = p.maxHr,
                                     imperialUnits = p.units == SB_Unit.IMPERIAL,
