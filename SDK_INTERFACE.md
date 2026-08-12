@@ -36,7 +36,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:1.1.0")
+    implementation("com.sensorbio:sensorbio-sdk:1.2.0")
 }
 ```
 
@@ -88,6 +88,7 @@ Plain `var`s the host sets once after `initialize`:
 | Property | Type | Controls |
 |---|---|---|
 | `environment` | `SB_Environment` | gRPC target (dev/prod); runtime-switchable |
+| `sdkKeyCredentials` | `SB_SdkKeyCredentials?` | org credentials for SDK-key mode (non-null ⇒ SDK-key auth); in-memory only, never persisted. Set once at launch before `registerUser` — see §5.1 |
 | `logHandler` | `((SB_LogLevel, String?, Array<out Any?>) -> Unit)?` | sink for SDK logs (unset = silent) |
 
 App identity is set-once config passed into `initialize(context, SB_AppConfig(...))` — `appType`,
@@ -263,17 +264,17 @@ Called directly on `SensorBioSDK.<method>(…)`. One-shot reads are `suspend fun
 | Workouts | `fetchWorkoutDetail(workoutTime: Instant)`, `modifyWorkout(action, date: Instant, timestamp: Instant, …)`, `fetchWorkoutSummary(date: Instant, granularity: SB_SummaryGranularity, workoutName, workoutTime: Instant)`, `fetchWorkoutTimeline(…, direction: SB_PageFetchDirection) -> SB_WorkoutTimelineResult`, `fetchWorkoutRecordingInfo` |
 | In-flight submissions | `reconcileSubmissions(entries: List<SB_WorkoutEntry>)` *(flip matched in-flight cards → processed; call after each `fetchWorkoutTimeline` with `result.items.flatMap { it.entries }`; no network)*, `retrySubmission(startTimestamp)` *(re-drive a FAILED submission)* — observe via `inflightSubmissions` (§3.1) |
 | Activities | `fetchActivityList(force: Boolean = false) -> SB_ActivityRecordingList`, `fetchTrainedActivities()` |
-| Spot-check | `fetchSpotCheckDetails(recordingId, impersonatedUserId?)` *(one-shot suspend read; throws on RPC error)* |
+| Spot-check | `fetchSpotCheckDetails(recordingId)` *(one-shot suspend read; throws on RPC error)* |
 | Recording meta | `fetchRecordingMetaInfo(type) -> List<SB_RecordingSessionMetaItem>`, `deleteRecordingMeta(id, name, type)` |
 | Insights | `fetchNewInsights`, `submitInsightsFeedback`, `fetchPopulationInsightsMetricList`, `fetchPopulationInsights` |
 | Meditation | `fetchMeditationGraph(date: Instant, sessionTimestamp)` |
-| Surveys | `submitBriefSurvey(survey, impersonatedUserId?)` *(suspend; awaits the upload)* |
+| Surveys | `submitBriefSurvey(survey)` *(suspend; awaits the upload)* |
 | Goals | `fetchGoals()`; `updateGoals(steps, calories, sleep)` *(suspend → `SB_UpdateGoalsOutcome`)* |
 | Stats | `fetchDailyStats(startDate, days, includeBiometrics, includeSleep, includeSteps)` |
 | Agreements | `shouldRequestAgreement`, `acceptAgreements(tosVersion, healthDataVersion)`, `acceptCurrentAgreements` *(suspend)* |
 | Account | `createAccount(SB_CreateAccountRequest)`, `updateUserProfile(SB_UserProfileUpdate)`, `changePassword(currentPassword, newPassword)`, `requestPasswordReset`, `checkEmailAvailability`, `validateAccountRequirements(SB_ValidateAccountRequirementsRequest) -> SB_ValidateAccountRequirementsResult`, `refreshUser`, `hydrateSession`, `generateTemporaryAuthToken() -> String?`, `registerApp(deviceId)` |
 | Recording submit | `createActivitySession(activityName, startEpochMs, durationSecs)` *(suspend; manual after-the-fact log)* |
-| Session | `signIn(email, password) -> SB_SignInOutcome`, `registerUser(orgId, sdkKey, userId, email?, sex?, birthdayYear?, birthdayMonth?, birthdayDay?, heightCm?, weightKg?, imperialUnits, activationCode?) -> SB_RegisterUserOutcome` *(SDK-key register-or-login — see §5.1)*, `signOut()`, `persistUser`, `deleteAccount`, `clearSession`, `clearPrefsOnLogout` *(signed-in identity is observable — see §3.1 `session`/`userProfileFlow`)* |
+| Session | `signIn(email, password) -> SB_SignInOutcome`, `registerUser(userId, email?, sex?, birthdayYear?, birthdayMonth?, birthdayDay?, heightCm?, weightKg?, imperialUnits, activationCode?) -> SB_RegisterUserOutcome` *(SDK-key register-or-login; org creds come from `sdkKeyCredentials` — see §5.1)*, `signOut()`, `persistUser`, `deleteAccount`, `clearSession`, `clearPrefsOnLogout` *(signed-in identity is observable — see §3.1 `session`/`userProfileFlow`)* |
 | Server writes | `reprocessSleep` *(suspend; user-tapped, throws on failure)*, `updateUserDeviceInfo`, `uploadUserPhoto` *(→ URL)*, `deleteUserPhoto` |
 
 > **`location` is a full-replace field.** `SB_UserProfileUpdate.location` and `SB_UserProfile.location`
@@ -289,8 +290,12 @@ users your app has already authenticated by its own means (your login, SSO, OAut
 care which). These users have **no** Sensor Bio email/password. On success the SDK persists the
 returned session and publishes `session` / `userProfileFlow`, exactly like `signIn`.
 
-- **`orgId` + `sdkKey`** — the server-issued organization credentials for your integration (from your
-  Sensor Bio dashboard). The backend validates that the key is active and belongs to `orgId`.
+- **`sdkKeyCredentials`** — set `SensorBioSDK.sdkKeyCredentials = SB_SdkKeyCredentials(orgId, sdkKey)`
+  **once at launch** (like `environment`) with the server-issued organization credentials for your
+  integration (from your Sensor Bio dashboard); the backend validates that the key is active and belongs
+  to `orgId`. A non-null value puts the SDK in **SDK-key mode**; it is held in memory only and never
+  persisted. `registerUser` reads these — it no longer takes `orgId`/`sdkKey` parameters (iOS parity) —
+  and fails if `sdkKeyCredentials` is unset.
 - **`userId`** — your own stable identifier for the end-user (`client_sdk_user_id`). The first call for
   a given `userId` registers; subsequent calls log in. It is also recorded as the user's **username**
   (visible in the web dashboard).
@@ -309,7 +314,10 @@ Every failure resolves to a typed `SB_RegisterUserOutcome` — it does not throw
 `PERMISSION_DENIED` for an inactive SDK key), and no raw gRPC message string ever crosses the boundary.
 
 ```kotlin
-when (val outcome = SensorBioSDK.registerUser(orgId = orgId, sdkKey = sdkKey, userId = userId)) {
+// Set once at launch (in-memory, never persisted):
+SensorBioSDK.sdkKeyCredentials = SB_SdkKeyCredentials(orgId = orgId, sdkKey = sdkKey)
+
+when (val outcome = SensorBioSDK.registerUser(userId = userId)) {
     is SB_RegisterUserOutcome.Success               -> routeToHome(outcome.session)
     SB_RegisterUserOutcome.ClientSdkUserIdAlreadyInUse -> showError("This user id is already in use.")
     SB_RegisterUserOutcome.DeviceSubscriptionRequired,
@@ -366,6 +374,7 @@ falling back to cache only on failure.
 ~276 public `SB_*` types the facade returns/accepts. Grouped index:
 
 - **User / auth** — `SB_UserProfile`, `SB_UserDemographics`, `SB_UserAppSettings`, `SB_Session`,
+  `SB_SdkKeyCredentials`,
   `SB_SignInOutcome` (+`SB_ServiceErrorCode`), `SB_RegisterUserOutcome`, `SB_CreateAccountOutcome`, `SB_ChangePasswordOutcome`,
   `SB_EmailAvailabilityOutcome`, `SB_UpdateUserProfileOutcome`, `SB_RequestPasswordResetOutcome`,
   `SB_AgreementCheck`, `SB_Gender`, `SB_CreateAccountRequest`, `SB_UserProfileUpdate`,
