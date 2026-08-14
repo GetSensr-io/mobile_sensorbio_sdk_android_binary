@@ -36,7 +36,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:1.2.0")
+    implementation("com.sensorbio:sensorbio-sdk:1.3.0")
 }
 ```
 
@@ -259,6 +259,10 @@ Called directly on `SensorBioSDK.<method>(…)`. One-shot reads are `suspend fun
 |---|---|
 | Dashboard | `fetchDashboardData(date: Instant, tzOffset, forceRemote)`, `dashboardUpdates(date: Instant, tzOffset, forceRemote): Flow<SB_DashboardData>` *(stale-then-fresh stream — replaces the removed `cachedDashboardData` peek)*, `clearDashboardData(date: Instant)` |
 | Skin temperature | `getSkinTemperature(date: Instant) -> SB_SkinTemperature?` *(on-device read — aggregates the local `temperature_data` rows for the calendar day into min/max/average + ascending points, all Celsius; no network; null when the day has no points. App applies °C/°F for display.)* |
+| Local-first HR points | `getHRPoints(date: Instant) -> SB_HRDataPoints` *(local-first read — see §5.2)* |
+| Local-first HRV points | `getHRVPoints(date: Instant) -> SB_HRVDataPoints` *(local-first read — see §5.3)* |
+| Local-first RR points | `getRRPoints(date: Instant) -> SB_RRDataPoints` *(local-first read — see §5.4)* |
+| Local-first steps | `getStepsPoints(date: Instant) -> SB_StepsDataPoints` *(local-first read — see §5.5)* |
 | Trending | `fetchRangeHR`/`fetchDailyHR`, `fetchRangeHRV`/`fetchDailyHRV`, `fetchRangeRR`/`fetchDailyRR`, `fetchRangeSpO2`/`fetchDailySpO2`, `fetchCalories`, `fetchSteps`, `fetchDailyActivityDetail`, `fetchRangeRecovery`/`fetchDailyRecovery` *(all take `date: Instant`; `forceRemote` optional)*. Stale-then-fresh `Flow` siblings: `rangeHRUpdates`/`dailyHRUpdates`, `rangeHRVUpdates`/`dailyHRVUpdates`, `rangeRRUpdates`/`dailyRRUpdates`, `rangeSpO2Updates`/`dailySpO2Updates`, `caloriesUpdates`, `stepsUpdates`, `dailyActivityDetailUpdates`, `rangeRecoveryUpdates`/`dailyRecoveryUpdates` |
 | Sleep | `fetchSleepDetail(endDate: Instant, endTimestamp, forceRemote?)`, `fetchSleepAggregation(date: Instant, …, forceRemote?)` *(+ `sleepDetailUpdates(endDate: Instant, endTimestamp, forceRemote?): Flow<SB_SleepDetailDay>` / `sleepAggregationUpdates(date: Instant, …, forceRemote?): Flow<SB_SleepDetailAggregated>` stale-then-fresh streams)*, `fetchSleepSessions(date: Instant)`, `deleteSleepSession(endTimestamp, date: Instant)`, `modifySleepSession(onset: Instant, wakeUp: Instant, endTimestamp, date: Instant) -> String`, `addSleepSession(onset: Instant, wakeUp: Instant)` *(writes throw `SB_SleepWriteError`)* |
 | Workouts | `fetchWorkoutDetail(workoutTime: Instant)`, `modifyWorkout(action, date: Instant, timestamp: Instant, …)`, `fetchWorkoutSummary(date: Instant, granularity: SB_SummaryGranularity, workoutName, workoutTime: Instant)`, `fetchWorkoutTimeline(…, direction: SB_PageFetchDirection) -> SB_WorkoutTimelineResult`, `fetchWorkoutRecordingInfo` |
@@ -367,6 +371,129 @@ disk cache, mirroring iOS `cachedRead`.
 falling back to cache only on failure.
 
 
+### 5.2 Local-first HR points
+
+`getHRPoints(date)` returns a day's HR samples **local-first**: it reads the day's on-device HR (local midnight→midnight in the device time zone) with **no** API round-trip when that data is already synced locally. Each point is tagged `AWAKE` / `ASLEEP` from the device's sleep sessions (`ASLEEP` = the point's epoch falls inside a session's `[sleepOnset, wakeUp)` window). Only when the day predates local sync (no local HR for the window) does it fall back to the API — one daily-HR fetch + one sleep fetch — backfill the HR + sleep locally, and rebuild, so a subsequent call for the same day is served entirely from the device. The first feature of the reusable `offlinefirst` surface (iOS-parity `getHRPoints(date:)`).
+
+```kotlin
+suspend fun getHRPoints(date: Instant): SB_HRDataPoints
+
+data class SB_HRDataPoints(val points: List<SB_HRDataPoint>) {
+    // Computed on the fly from `points`; each is null when its input set is empty
+    // (and `averageRHR` is null when there are no ASLEEP points — never a misleading 0).
+    val averageHR: Int?   // mean value of all points
+    val averageRHR: Int?  // mean value of ASLEEP points (resting HR)
+    val lowestHR: Int?    // min value
+    val highestHR: Int?   // max value
+}
+
+data class SB_HRDataPoint(
+    val epoch: Long,          // ms
+    val value: Int,           // bpm, rounded from the stored Float
+    val type: SB_HRPointType,
+)
+
+enum class SB_HRPointType { AWAKE, ASLEEP }
+```
+
+`getHRPoints` throws only on the server-backfill path (e.g. when signed out / the daily-HR or sleep fetch fails); the pure-local path never touches the network.
+
+### 5.3 Local-first HRV points
+
+`getHRVPoints(date)` is the HRV sibling of `getHRPoints` — same local-first contract: it reads the day's on-device HRV (local midnight→midnight in the device time zone) with **no** API round-trip when that data is already synced locally, tags each point `AWAKE` / `ASLEEP` from the device's sleep sessions, and falls back to the API (one daily-HRV fetch + one sleep fetch) only when the day predates local sync — then backfills and rebuilds so a later call is served entirely from the device. HRV shares the same single `ppg_data_results` row as HR (distinct columns), so the backfill updates only the HRV slot and never clobbers HR.
+
+```kotlin
+suspend fun getHRVPoints(date: Instant): SB_HRVDataPoints
+
+data class SB_HRVDataPoints(val points: List<SB_HRVDataPoint>) {
+    // Computed on the fly from `points`; each is null when its input set is empty.
+    // Mirrors the HRV day view (rMSSD + daily-average / lowest / highest): `averageRestingHRV`
+    // (mean of ASLEEP/nocturnal points) is the offline proxy for the server's sleep-derived rMSSD.
+    val averageHRV: Int?          // mean value of all points (daily average)
+    val averageRestingHRV: Int?   // mean value of ASLEEP points (nocturnal — rMSSD-parity primary)
+    val lowestHRV: Int?           // min value
+    val highestHRV: Int?          // max value
+}
+
+data class SB_HRVDataPoint(
+    val epoch: Long,          // ms
+    val value: Int,           // rMSSD in ms, rounded from the stored Float
+    val type: SB_HRPointType, // AWAKE / ASLEEP — reused from getHRPoints
+)
+```
+
+`getHRVPoints` throws only on the server-backfill path (e.g. when signed out / the daily-HRV or sleep fetch fails); the pure-local path never touches the network.
+
+### 5.4 Local-first RR points
+
+`getRRPoints(date)` is the RR (respiratory / breathing rate) sibling of `getHRPoints` / `getHRVPoints` — same local-first contract: it reads the day's on-device RR (local midnight→midnight in the device time zone) with **no** API round-trip when that data is already synced locally, tags each point `AWAKE` / `ASLEEP` from the device's sleep sessions, and falls back to the API (one daily-BRPM fetch + one sleep fetch) only when the day predates local sync — then backfills and rebuilds so a later call is served entirely from the device. RR shares the same single `ppg_data_results` row as HR/HRV (distinct columns), so the backfill updates only the RR slot and never clobbers HR/HRV.
+
+```kotlin
+suspend fun getRRPoints(date: Instant): SB_RRDataPoints
+
+data class SB_RRDataPoints(val points: List<SB_RRDataPoint>) {
+    // Computed on the fly from `points`; each is null when its input set is empty.
+    // Mirrors the RR day view (brpm + daily-average / lowest / highest): `averageRestingRR`
+    // (mean of ASLEEP/nocturnal points) is the offline proxy for the server's sleep-derived brpm.
+    // Unlike HR/HRV these are Float — RR is inherently fractional (matches the API path's brpm).
+    val averageRR: Float?          // mean value of all points (daily average)
+    val averageRestingRR: Float?   // mean value of ASLEEP points (nocturnal — brpm-parity primary)
+    val lowestRR: Float?           // min value
+    val highestRR: Float?          // max value
+}
+
+data class SB_RRDataPoint(
+    val epoch: Long,          // ms
+    val value: Float,         // breaths per minute (brpm) — raw stored Float, unrounded
+    val type: SB_HRPointType, // AWAKE / ASLEEP — reused from getHRPoints
+)
+```
+
+`getRRPoints` throws only on the server-backfill path (e.g. when signed out / the daily-BRPM or sleep fetch fails); the pure-local path never touches the network.
+
+### 5.5 Local-first steps
+
+`getStepsPoints(date)` is the steps sibling of `getHRPoints` / `getHRVPoints` / `getRRPoints` — same local-first contract: it reads the day's on-device steps (local midnight→midnight in the device time zone) with **no** API round-trip when that data is already synced locally, and falls back to the API (one daily-steps fetch) only when the day predates local sync — then backfills and rebuilds so a later call is served entirely from the device.
+
+Steps differ from the vitals in three deliberate ways:
+
+- **Different store, no shared-row / slot model.** Steps live in their own `engine_result_requests` table (one row per interval, with step / distance / calories / active-seconds columns), not the vitals' `ppg_data_results`. The backfill is a plain keyed upsert (`REPLACE` on the ms-epoch `time`), marked `uploaded = true` so it never re-uploads.
+- **No awake/asleep tag, no min/avg/max.** A step total is a count, not a distribution, so there is no `SB_HRPointType` and no lowest/average/highest — the aggregates are day **totals**.
+- **Totals are non-null (default `0`).** A day with the band worn but idle legitimately totals `0` steps, so the totals never go null. Use `points.isEmpty()` to tell "no data for this day" from a genuine zero.
+
+`totalActiveSeconds` is the day's active **duration** (SB-1662). On device it is the real per-minute `active_seconds` from the band; SB-1662 also fixed the store path (`StepsDataManager`), which previously hard-coded a flat 60 s/minute — throwing the band's duration signal away both locally and on the uploaded packet (iOS already stored the real value). On a server-backfilled day the duration comes from the server `TOTAL_DURATION` metric; distance and calories are recomputed from `(steps, activeSeconds)` via the same in-SDK formula the live store uses (the server's `DISTANCE` metric is in the user's display unit, not metres).
+
+```kotlin
+suspend fun getStepsPoints(date: Instant): SB_StepsDataPoints
+
+data class SB_StepsDataPoints(val points: List<SB_StepsDataPoint>) {
+    // Computed on the fly from `points`; day totals (non-null, default 0 — a worn-but-idle day is a genuine 0).
+    val totalSteps: Int             // total steps
+    val totalDistanceMeters: Float  // total distance, metres
+    val totalCalories: Float        // total active (step) calories, kcal
+    val totalActiveSeconds: Int     // total active duration, seconds
+    val hourlyBuckets: List<SB_StepsHourBucket> // points summed into local hour-of-day buckets (present hours only)
+}
+
+data class SB_StepsDataPoint(
+    val epoch: Long,           // ms
+    val steps: Int,
+    val distanceMeters: Float, // metres
+    val calories: Float,       // kcal
+    val activeSeconds: Int,    // active duration in the interval, seconds
+)
+
+data class SB_StepsHourBucket(
+    val hour: Int,             // 0..23 local hour of day
+    val steps: Int,
+    val distanceMeters: Float,
+    val calories: Float,
+    val activeSeconds: Int,
+)
+```
+
+`getStepsPoints` throws only on the server-backfill path (e.g. when signed out / the daily-steps fetch fails); the pure-local path never touches the network. (iOS has no `getStepsPoints` yet — Android leads, as with HRV/RR.)
+
 ---
 
 ## 6. Domain types (`SB_*`)
@@ -404,6 +531,10 @@ falling back to cache only on failure.
   `SB_EcgSample` (§3.2); `SB_LiveMetric`; `SB_HRMData`(+`SB_HRMCategory`); `SB_TimeValuePoint`, `SB_DateValuePoint`,
   `SB_PoincarePlotGraph`, `SB_BarGraph`, `SB_CalorieMetric`, `SB_CaloriesTrending`, `SB_CardioStats`;
   `SB_SkinTemperature`(+`SB_SkinTemperature.Point`) — on-device day summary from `getSkinTemperature(date)`, all Celsius.
+  `SB_HRDataPoints`(+`SB_HRDataPoint`, `SB_HRPointType{AWAKE,ASLEEP}`) — local-first day HR from `getHRPoints(date)` (§5.2); the container computes `averageHR`/`averageRHR`/`lowestHR`/`highestHR` on the fly (nullable, never a misleading 0).
+  `SB_HRVDataPoints`(+`SB_HRVDataPoint`; reuses `SB_HRPointType`) — local-first day HRV from `getHRVPoints(date)` (§5.3); the container computes `averageHRV`/`averageRestingHRV`/`lowestHRV`/`highestHRV` on the fly (nullable, never a misleading 0).
+  `SB_RRDataPoints`(+`SB_RRDataPoint`; reuses `SB_HRPointType`) — local-first day RR from `getRRPoints(date)` (§5.4); the container computes `averageRR`/`averageRestingRR`/`lowestRR`/`highestRR` on the fly (nullable, never a misleading 0).
+  `SB_StepsDataPoints`(+`SB_StepsDataPoint`, `SB_StepsHourBucket`) — local-first day steps from `getStepsPoints(date)` (§5.5); the container computes day totals `totalSteps`/`totalDistanceMeters`/`totalCalories`/`totalActiveSeconds` (active duration) + `hourlyBuckets` on the fly. No awake/asleep tag and no min/avg/max (steps are counts); totals are non-null (default 0).
 - **Recovery** — `SB_RecoveryRange*`, `SB_DailyRecovery*`, `SB_RecoveryScoreFactor/Section`. Each
   `SB_RecoveryScoreFactor` reports its `percentile` (0–100) and a pre-computed `scoreValue` — the
   factor's weighted contribution under `0.4·HRV + 0.4·RHR + 0.1·Sleep Efficiency + 0.1·Sleep
