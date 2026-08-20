@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive launcher icon (API 26+). Three layers, mapping the SB-SDK artwork onto Android's icon
+  model:
+
+    <background>  a flat colour — @color/ic_launcher_background (Sensor Bio orange).
+    <foreground>  the cream SB/SDK glyph on transparency, laid out well inside the 66dp safe circle
+                  so the launcher's circular/squircle mask cannot clip it.
+    <monochrome>  the same glyph as a pure alpha shape for Android 13+ themed icons; the system
+                  supplies the colour, so only coverage matters here.
+
+  Deliberately ONE appearance: cream-on-orange in both light and dark mode. There are no -night
+  variants — the orange background is opaque and reads well against either launcher backdrop, and a
+  separate dark treatment would just be a second thing to keep in sync. Themed icons are still
+  covered, by <monochrome>.
+
+  Pre-26 launchers fall back to the flattened mipmap-*dpi/ic_launcher(_round).png.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
+</adaptive-icon>

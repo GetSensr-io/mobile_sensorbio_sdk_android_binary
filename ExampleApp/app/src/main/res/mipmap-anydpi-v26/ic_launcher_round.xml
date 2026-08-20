@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  `android:roundIcon` on API 26+. An adaptive icon is already mask-agnostic, so the round variant is
+  the same three layers — the launcher applies whichever mask it uses. Declared so launchers that ask
+  for the round resource by name get the adaptive icon rather than the flattened pre-26 PNG.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
+</adaptive-icon>

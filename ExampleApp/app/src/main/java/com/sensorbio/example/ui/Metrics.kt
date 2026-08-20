@@ -1,6 +1,7 @@
 package com.sensorbio.example.ui
 
 import com.sensorbio.sensorbiosdk.SensorBioSDK
+import com.sensorbio.sensorbiosdk.datatypes.SB_BiometricPoint
 import com.sensorbio.sensorbiosdk.datatypes.SB_SleepMetricValue
 import com.sensorbio.sensorbiosdk.datatypes.SB_StepMetric
 import com.sensorbio.sensorbiosdk.datatypes.SB_StepMetricType
@@ -72,14 +73,21 @@ private fun dateLabel(packed: Int, grain: Grain): String {
 private fun unitLabel(value: Float, unit: String) = "${value.toInt()} $unit".trim()
 
 /** Merge a metric's separate sleep + daytime point lists into one chronological, sleep/wake-tagged table. */
-private fun mergedReadings(
-    sleep: List<Pair<Long, Float>>,
-    daytime: List<Pair<Long, Float>>,
-    unit: String,
-): List<DataPoint> =
-    (sleep.map { it to "Sleep" } + daytime.map { it to "Awake" })
-        .sortedBy { it.first.first }
-        .map { (p, tag) -> DataPoint(timeLabel(p.first), "${p.second.toInt()} $unit", tag = tag) }
+/**
+ * Render a daily graph's `points` — already ascending by timestamp and already tagged sleep / awake
+ * by the SDK. Outlier-tagged samples are measurements the server flagged as unreliable, so they are
+ * skipped.
+ */
+private fun dailyReadings(points: List<SB_BiometricPoint>, unit: String): List<DataPoint> =
+    points
+        .filterNot { it.valueType.name.endsWith("OUTLIER") }
+        .map {
+            DataPoint(
+                timeLabel(it.timestamp),
+                "${it.value.toInt()} $unit",
+                tag = if (it.valueType.name.startsWith("SLEEP")) "Sleep" else "Awake",
+            )
+        }
 
 /** Each SB_StepMetric → a section: avg subtitle + per-bucket points (time of day for Day, date for ranges). */
 private fun stepMetricSection(m: SB_StepMetric, grain: Grain): MetricSection = MetricSection(
@@ -98,22 +106,17 @@ suspend fun loadMetric(kind: MetricKind, date: Instant, grain: Grain): MetricDat
         if (grain == Grain.DAY) {
             val g = SensorBioSDK.fetchDailyHR(date).graph ?: return noData()
             MetricData(
-                "${g.rawAvg.toInt()} bpm",
-                listOf("Resting" to "${g.restingBpm.toInt()} bpm", "Average" to "${g.rawAvg.toInt()} bpm",
-                    "Lowest" to "${g.rawLowest.toInt()} bpm", "Highest" to "${g.rawHighest.toInt()} bpm",
-                    "Baseline" to "${g.rawBaseline.toInt()} bpm"),
-                listOf(MetricSection("Readings", null,
-                    g.heartRateTimeseriesPoints.sortedBy { it.timestamp }.map {
-                        // Each reading is tagged AWAKE / SLEEP (+ outlier/abnormal variants) by the SDK.
-                        DataPoint(timeLabel(it.timestamp), "${it.value.toInt()} bpm",
-                            tag = if (it.valueType.name.startsWith("SLEEP")) "Sleep" else "Awake")
-                    })),
+                "${g.average.toInt()} bpm",
+                listOf("Resting" to "${g.resting.toInt()} bpm", "Average" to "${g.average.toInt()} bpm",
+                    "Lowest" to "${g.lowest.toInt()} bpm", "Highest" to "${g.highest.toInt()} bpm",
+                    "Baseline" to "${g.baseline.toInt()} bpm"),
+                listOf(MetricSection("Readings", null, dailyReadings(g.points, "bpm"))),
             )
         } else {
             val g = SensorBioSDK.fetchRangeHR(date, grain.sdk).graph ?: return noData()
             MetricData(
-                "${g.avgBpm.toInt()} bpm",
-                listOf("Average" to "${g.avgBpm.toInt()} bpm", "Lowest" to "${g.lowest.toInt()} bpm",
+                "${g.averageBpm.toInt()} bpm",
+                listOf("Average" to "${g.averageBpm.toInt()} bpm", "Lowest" to "${g.lowest.toInt()} bpm",
                     "Highest" to "${g.highest.toInt()} bpm", "Baseline" to "${g.baseline.toInt()} bpm"),
                 listOf(MetricSection("BPM", null,
                     g.bpmPoints.sortedBy { it.date }.map { DataPoint(dateLabel(it.date, grain), "${it.value.toInt()} bpm") })),
@@ -124,20 +127,17 @@ suspend fun loadMetric(kind: MetricKind, date: Instant, grain: Grain): MetricDat
         if (grain == Grain.DAY) {
             val g = SensorBioSDK.fetchDailyHRV(date).graph ?: return noData()
             MetricData(
-                "${g.rMssd.toInt()} ms",
-                listOf("rMSSD" to "${g.rMssd.toInt()} ms", "Average" to "${g.rawAvg.toInt()} ms",
-                    "Lowest" to "${g.rawLowest.toInt()} ms", "Highest" to "${g.rawHighest.toInt()} ms",
-                    "Baseline" to "${g.rawBaseline.toInt()} ms"),
-                listOf(MetricSection("Readings", null, mergedReadings(
-                    g.rawSleepHrvPoints.map { it.timestamp to it.value },
-                    g.rawDatetimeHrvPoints.map { it.timestamp to it.value },
-                    "ms"))),
+                "${g.resting.toInt()} ms",
+                listOf("rMSSD" to "${g.resting.toInt()} ms", "Average" to "${g.average.toInt()} ms",
+                    "Lowest" to "${g.lowest.toInt()} ms", "Highest" to "${g.highest.toInt()} ms",
+                    "Baseline" to "${g.baseline.toInt()} ms"),
+                listOf(MetricSection("Readings", null, dailyReadings(g.points, "ms"))),
             )
         } else {
             val g = SensorBioSDK.fetchRangeHRV(date, grain.sdk).graph ?: return noData()
             MetricData(
                 "${g.rMssd.toInt()} ms",
-                listOf("rMSSD" to "${g.rMssd.toInt()} ms", "Average" to "${g.avg.toInt()} ms",
+                listOf("rMSSD" to "${g.rMssd.toInt()} ms", "Average" to "${g.average.toInt()} ms",
                     "Lowest" to "${g.lowest.toInt()} ms", "Highest" to "${g.highest.toInt()} ms",
                     "Baseline" to "${g.baseline.toInt()} ms"),
                 listOf(MetricSection("HRV index", null,
@@ -149,20 +149,17 @@ suspend fun loadMetric(kind: MetricKind, date: Instant, grain: Grain): MetricDat
         if (grain == Grain.DAY) {
             val g = SensorBioSDK.fetchDailyRR(date).graph ?: return noData()
             MetricData(
-                "${g.brpm.toInt()} brpm",
-                listOf("Resting" to "${g.brpm.toInt()} brpm", "Average" to "${g.rawAvg.toInt()} brpm",
-                    "Lowest" to "${g.rawLowest.toInt()} brpm", "Highest" to "${g.rawHighest.toInt()} brpm",
-                    "Baseline" to "${g.rawBaseline.toInt()} brpm"),
-                listOf(MetricSection("Readings", null, mergedReadings(
-                    g.rawSleepPoints.map { it.timestamp to it.value },
-                    g.rawDatetimePoints.map { it.timestamp to it.value },
-                    "brpm"))),
+                "${g.resting.toInt()} brpm",
+                listOf("Resting" to "${g.resting.toInt()} brpm", "Average" to "${g.average.toInt()} brpm",
+                    "Lowest" to "${g.lowest.toInt()} brpm", "Highest" to "${g.highest.toInt()} brpm",
+                    "Baseline" to "${g.baseline.toInt()} brpm"),
+                listOf(MetricSection("Readings", null, dailyReadings(g.points, "brpm"))),
             )
         } else {
             val g = SensorBioSDK.fetchRangeRR(date, grain.sdk).graph ?: return noData()
             MetricData(
-                "${g.avgBrpm.toInt()} brpm",
-                listOf("Average" to "${g.avgBrpm.toInt()} brpm", "Lowest" to "${g.lowest.toInt()} brpm",
+                "${g.averageBrpm.toInt()} brpm",
+                listOf("Average" to "${g.averageBrpm.toInt()} brpm", "Lowest" to "${g.lowest.toInt()} brpm",
                     "Highest" to "${g.highest.toInt()} brpm", "Baseline" to "${g.baseline.toInt()} brpm"),
                 listOf(MetricSection("BRPM", null,
                     g.brpmPoints.sortedBy { it.date }.map { DataPoint(dateLabel(it.date, grain), "${it.value.toInt()} brpm") })),

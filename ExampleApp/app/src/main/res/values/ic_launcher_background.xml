@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Sensor Bio orange, behind the cream SB/SDK glyph. Used in light AND dark mode — see the note
+         in mipmap-anydpi-v26/ic_launcher.xml. -->
+    <color name="ic_launcher_background">#D85A2E</color>
+</resources>

@@ -13,127 +13,90 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sensorbio.sensorbiosdk.SensorBioSDK
-import com.sensorbio.sensorbiosdk.datatypes.SB_DiscoveredDevice
-import kotlinx.coroutines.launch
+import com.sensorbio.sensorbiosdk.datatypes.SB_PairingFailure
+import com.sensorbio.sensorbiosdk.datatypes.SB_PairingState
 
-private enum class Phase { IDLE, SCANNING, CONNECTING, CONFIRMING, ALL_SET, ERROR }
-
+/**
+ * Pairing is ONE SDK-owned transaction, so this screen is a *renderer* over
+ * [SensorBioSDK.pairingState] plus three calls: [SensorBioSDK.beginPairing] to open it,
+ * [SensorBioSDK.selectDevice] to pick a band, [SensorBioSDK.endPairing] to cancel a running
+ * transaction or dismiss a terminal one.
+ *
+ * There is deliberately no host-side sequencing here — no scan/stop bookkeeping, no connect step, no
+ * LED or haptic choreography, no button-tap listening, no timeouts, and no cleanup on failure. The SDK
+ * does all of it and reports progress on the flow; a transaction that ends any way other than
+ * `Paired` leaves no trace, so there is nothing for this screen to undo.
+ *
+ * The one genuinely host-side job is the runtime **Bluetooth permission** grant: the SDK scans, it
+ * never asks for the grant.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PairDeviceScreen(onClose: () -> Unit) {
-    val scope = rememberCoroutineScope()
-    var phase by remember { mutableStateOf(Phase.IDLE) }
-    var errorMsg by remember { mutableStateOf<String?>(null) }
-    val devices = remember { mutableStateListOf<SB_DiscoveredDevice>() }
-    var selected by remember { mutableStateOf<SB_DiscoveredDevice?>(null) }
-    var tapBaseline by remember { mutableStateOf<Int?>(null) }
+    val state by SensorBioSDK.pairingState.collectAsStateWithLifecycle()
+    var permissionError by remember { mutableStateOf<String?>(null) }
 
-    // Event collectors — live for the screen's lifetime; act based on the current phase.
-    LaunchedEffect(Unit) {
-        scope.launch {
-            SensorBioSDK.deviceDiscovered.collect { device ->
-                if (phase == Phase.SCANNING && devices.none { it.macAddress == device.macAddress }) {
-                    devices.add(device)
-                }
-            }
-        }
-        scope.launch {
-            SensorBioSDK.pairingConnection.collect {
-                if (phase == Phase.CONNECTING) {
-                    SensorBioSDK.stopScan()
-                    phase = Phase.CONFIRMING
-                    tapBaseline = SensorBioSDK.buttonTaps.value
-                    SensorBioSDK.setAskForDeviceResponse(true)
-                    scope.launch { runCatching { SensorBioSDK.userLED(blue = true, blink = true, seconds = 5) } }
-                }
-            }
-        }
-        scope.launch {
-            SensorBioSDK.buttonTaps.collect { count ->
-                if (phase == Phase.CONFIRMING && count != null && count != tapBaseline) {
-                    SensorBioSDK.setAskForDeviceResponse(false)
-                    selected?.let { SensorBioSDK.addPairedDevice(it) }
-                    phase = Phase.ALL_SET
-                }
-            }
-        }
-        scope.launch {
-            SensorBioSDK.deviceDisconnected.collect {
-                if (phase == Phase.CONNECTING || phase == Phase.CONFIRMING) {
-                    errorMsg = "Device disconnected before pairing finished."
-                    phase = Phase.ERROR
-                }
-            }
-        }
-    }
-
-    fun startScan() {
-        devices.clear()
-        selected = null
-        errorMsg = null
-        phase = Phase.SCANNING
-        SensorBioSDK.startScan()
-    }
-
-    fun connect(device: SB_DiscoveredDevice) {
-        selected = device
-        phase = Phase.CONNECTING
-        SensorBioSDK.connect(device.macAddress, pairing = true)
-    }
-
-    fun cancel() {
-        SensorBioSDK.stopScan()
-        runCatching { SensorBioSDK.setAskForDeviceResponse(false) }
-        devices.clear()
-        selected = null
-        phase = Phase.IDLE
-    }
-
-    // The SDK assumes BLE permissions are granted — the host requests them. Do it right before scanning.
+    // The SDK assumes BLE permissions are granted — the host requests them, right before pairing.
+    // Location is required for scan results because the SDK's BLUETOOTH_SCAN isn't neverForLocation.
     val context = LocalContext.current
     val blePerms = remember {
-        // Location is required for scan results because the SDK's BLUETOOTH_SCAN isn't neverForLocation.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             arrayOf(
                 Manifest.permission.BLUETOOTH_SCAN,
                 Manifest.permission.BLUETOOTH_CONNECT,
                 Manifest.permission.ACCESS_FINE_LOCATION,
             )
-        else
+        } else {
             arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
     }
-    fun hasBlePerms() = blePerms.all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
-    val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-        if (result.values.all { it }) startScan() else { errorMsg = "Bluetooth permission is required to scan." ; phase = Phase.ERROR }
+    val permLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { result ->
+        if (result.values.all { it }) {
+            SensorBioSDK.beginPairing()
+        } else {
+            permissionError = "Bluetooth permission is required to pair."
+        }
     }
-    fun requestScan() {
-        if (hasBlePerms()) startScan() else permLauncher.launch(blePerms)
+
+    fun begin() {
+        permissionError = null
+        val granted = blePerms.all {
+            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+        }
+        // beginPairing() re-issues the scan itself once the adapter is up, so it is safe to call with
+        // a freshly-granted permission and Bluetooth still coming online.
+        if (granted) SensorBioSDK.beginPairing() else permLauncher.launch(blePerms)
+    }
+
+    fun close() {
+        SensorBioSDK.endPairing() // idempotent + safe from any state, including "none open"
+        onClose()
     }
 
     Scaffold(
@@ -141,7 +104,7 @@ fun PairDeviceScreen(onClose: () -> Unit) {
             TopAppBar(
                 title = { Text("Pair a device") },
                 navigationIcon = {
-                    IconButton(onClick = { cancel(); onClose() }) {
+                    IconButton(onClick = { close() }) {
                         Icon(Icons.Filled.Close, contentDescription = "Close")
                     }
                 },
@@ -152,29 +115,40 @@ fun PairDeviceScreen(onClose: () -> Unit) {
             Modifier.fillMaxSize().padding(padding).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("Status: ${phase.name}", style = MaterialTheme.typography.titleMedium)
-
-            when (phase) {
-                Phase.IDLE, Phase.ERROR -> {
-                    errorMsg?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            when (val current = state) {
+                // No transaction open — the start screen.
+                null -> {
+                    permissionError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                     Text(
-                        "Put the wearable in pairing range, then scan. Select it to connect; " +
-                            "when it's connected, tap the button on the device to confirm.",
+                        "Put the wearable in pairing range and start pairing. Pick it from the list; " +
+                            "when it blinks and buzzes, press its button to confirm.",
                         style = MaterialTheme.typography.bodyMedium,
                     )
-                    Button(onClick = { requestScan() }, modifier = Modifier.fillMaxWidth()) { Text("Scan") }
+                    Button(onClick = { begin() }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Start pairing")
+                    }
                 }
 
-                Phase.SCANNING -> {
-                    Text("Scanning… select a device to connect.", style = MaterialTheme.typography.bodyMedium)
-                    OutlinedButton(onClick = { SensorBioSDK.stopScan(); phase = Phase.IDLE }) { Text("Stop") }
+                is SB_PairingState.Scanning -> {
+                    Text("Searching for devices…", style = MaterialTheme.typography.titleMedium)
+                    if (current.devices.isEmpty()) {
+                        CircularProgressIndicator()
+                    } else {
+                        Text("Select a device to pair.", style = MaterialTheme.typography.bodyMedium)
+                    }
+                    // Cumulative + de-duplicated by the SDK; just render it.
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(devices) { device ->
+                        items(current.devices) { device ->
                             Card(
-                                Modifier.fillMaxWidth().clickable { connect(device) },
+                                Modifier.fillMaxWidth().clickable {
+                                    SensorBioSDK.selectDevice(device.macAddress)
+                                },
                             ) {
                                 Column(Modifier.padding(12.dp)) {
-                                    Text(device.name ?: "(unnamed)", style = MaterialTheme.typography.titleSmall)
+                                    Text(
+                                        device.name ?: "(unnamed ${device.typeName})",
+                                        style = MaterialTheme.typography.titleSmall,
+                                    )
                                     Text(
                                         device.macAddress,
                                         style = MaterialTheme.typography.bodySmall,
@@ -186,17 +160,54 @@ fun PairDeviceScreen(onClose: () -> Unit) {
                     }
                 }
 
-                Phase.CONNECTING ->
-                    Text("Connecting to ${selected?.name ?: selected?.macAddress}…")
+                is SB_PairingState.Connecting -> {
+                    Text("Connecting…", style = MaterialTheme.typography.titleMedium)
+                    Text(current.device.name ?: current.device.macAddress)
+                    CircularProgressIndicator()
+                }
 
-                Phase.CONFIRMING ->
-                    Text("Connected. Tap the button on the device to confirm pairing (LED is blinking).")
+                is SB_PairingState.AwaitingConfirmation -> {
+                    Text("Press the button", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "${current.device.name ?: "The device"} is blinking and buzzing — press its " +
+                            "button to confirm the pair.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    CircularProgressIndicator()
+                }
 
-                Phase.ALL_SET -> {
-                    Text("All set — ${selected?.name ?: "device"} paired.", color = MaterialTheme.colorScheme.primary)
-                    Button(onClick = onClose, modifier = Modifier.fillMaxWidth()) { Text("Done") }
+                // Terminal — the transaction stays open until endPairing(), which `close()` calls.
+                is SB_PairingState.Paired -> {
+                    Text("All set", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "${current.device.name} (${current.device.type}) is paired and ready.",
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Button(onClick = { close() }, modifier = Modifier.fillMaxWidth()) { Text("Done") }
+                }
+
+                is SB_PairingState.Failed -> {
+                    Text("Couldn't pair", style = MaterialTheme.typography.titleMedium)
+                    Text(current.reason.message(), color = MaterialTheme.colorScheme.error)
+                    Button(onClick = { begin() }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Try again")
+                    }
                 }
             }
         }
     }
+}
+
+/** Failure reasons are typed, so the host owns the wording. */
+private fun SB_PairingFailure.message(): String = when (this) {
+    SB_PairingFailure.ScanTimeout ->
+        "No device found. Make sure it's charged, awake, and close to the phone."
+    SB_PairingFailure.ConnectTimeout ->
+        "Couldn't connect to the device. Move closer and try again."
+    SB_PairingFailure.ConnectionLost ->
+        "The device disconnected before pairing finished."
+    SB_PairingFailure.NotConfirmed ->
+        "No button press was registered in time. Try again and press the device's button."
+    SB_PairingFailure.DeviceUnavailable ->
+        "That device is no longer available. Search again."
 }

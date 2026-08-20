@@ -14,6 +14,12 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
+
+        // The SDK library declares a `surface` product-flavor dimension and this app declares none,
+        // so the app has to say which surface it wants: `public` — the customer surface, i.e. exactly
+        // what the published AAR exposes. Inert when resolving the published AAR (a single variant
+        // with no `surface` attribute); load-bearing when the SDK is built from source.
+        missingDimensionStrategy("surface", "public")
     }
 
     buildFeatures {
@@ -39,7 +45,7 @@ configurations.configureEach {
 dependencies {
     // The entire SensorBio integration: one coordinate, resolved from the public Maven repo.
     // It brings the embedded BLE + edge binaries and declares its OSS transitive deps (incl. coroutines).
-    implementation("com.sensorbio:sensorbio-sdk:1.2.0")
+    implementation("com.sensorbio:sensorbio-sdk:2.0.0")
 
     val composeBom = platform("androidx.compose:compose-bom:2024.09.03")
     implementation(composeBom)
