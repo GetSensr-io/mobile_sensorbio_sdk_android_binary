@@ -37,7 +37,7 @@ import com.sensorbio.example.Env
 import com.sensorbio.sensorbiosdk.SensorBioSDK
 import com.sensorbio.sensorbiosdk.datatypes.SB_Environment
 import com.sensorbio.sensorbiosdk.datatypes.SB_RegisterUserOutcome
-import com.sensorbio.sensorbiosdk.datatypes.SB_SdkKeyCredentials
+import com.sensorbio.sensorbiosdk.datatypes.SB_SDKKeyCredentials
 import kotlinx.coroutines.launch
 
 /**
@@ -132,7 +132,7 @@ private fun SdkRegisterForm() {
             style = MaterialTheme.typography.bodySmall,
         )
         AuthField(orgId, { orgId = it }, "Org ID")
-        AuthField(sdkKey, { sdkKey = it }, "SDK Key (secret)", isPassword = true)
+        AuthField(sdkKey, { sdkKey = it }, "SDK Token (secret)", isPassword = true)
         AuthField(userId, { userId = it }, "User ID (client_sdk_user_id)")
         AuthField(activationCode, { activationCode = it }, "Activation code (optional)")
 
@@ -144,7 +144,7 @@ private fun SdkRegisterForm() {
                     try {
                         // 1) Put the SDK into SDK-key mode (in-memory only).
                         SensorBioSDK.sdkKeyCredentials =
-                            SB_SdkKeyCredentials(orgId = orgId.trim(), sdkKey = sdkKey.trim())
+                            SB_SDKKeyCredentials(org_id = orgId.trim(), sdk_token = sdkKey.trim())
                         // 2) Register-or-login the org's user.
                         val outcome = SensorBioSDK.registerUser(
                             userId = userId.trim(),

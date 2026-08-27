@@ -36,7 +36,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:2.0.0")
+    implementation("com.sensorbio:sensorbio-sdk:2.1.0")
 }
 ```
 
@@ -88,7 +88,7 @@ Plain `var`s the host sets once after `initialize`:
 | Property | Type | Controls |
 |---|---|---|
 | `environment` | `SB_Environment` | gRPC target (dev/prod); runtime-switchable |
-| `sdkKeyCredentials` | `SB_SdkKeyCredentials?` | org credentials for SDK-key mode (non-null ⇒ SDK-key auth); in-memory only, never persisted. Set once at launch before `registerUser` — see §5.1 |
+| `sdkKeyCredentials` | `SB_SDKKeyCredentials?` | org credentials for SDK-key mode (non-null ⇒ SDK-key auth); in-memory only, never persisted. Set once at launch before `registerUser` — see §5.1 |
 | `logHandler` | `((SB_LogLevel, String?, Array<out Any?>) -> Unit)?` | sink for SDK logs (unset = silent) |
 
 App identity is set-once config passed into `initialize(context, SB_AppConfig(...))` — `appType`,
@@ -139,6 +139,16 @@ event streams, recording control, device & BLE control (§3.4), and the flat ser
 | `featureFlags` | `StateFlow<List<String>>` | reactive feature flags; set at login + globals refresh, cleared on sign-out |
 | `forceUserToUpdatePassword` / `forceUserToUpdateProfile` | `StateFlow<Boolean>` | forced-on-login flags; set at login, cleared on sign-out |
 
+> **An absent birthday is null, not a sentinel.** `SB_UserProfile.birthday` is
+> `SB_CalendarDate?` — null when the server has no birthday for the user — and
+> `SB_UserProfile.age` is `Int?` for the same reason. Neither is ever the zero
+> calendar date. Before SB-1837 both platforms represented "no birthday" as that
+> zero date, which no type check could distinguish from a real one: iOS computed an
+> age around 2025 from it (a max HR of roughly -912), and Android threw
+> `IllegalFieldValueException` out of `age`, `BMR` and `CFF`. Host code that has to
+> produce a number should substitute `SB_UserProfile.DEFAULT_AGE_YEARS`, which is
+> what the SDK's own internal compute uses and is the same on both platforms.
+
 ### 3.2 Event streams — `SharedFlow` (one-shot)
 
 | Flow | Payload | Purpose |
@@ -164,7 +174,38 @@ event streams, recording control, device & BLE control (§3.4), and the flat ser
 | `deviceDisconnected` | `String` | the device disconnected; payload = macAddress |
 | `hrSyncFinishedForActivity` | `Unit` | a recorded activity's HR/data finished syncing+uploading |
 | `signOutComplete` | `Unit` | involuntary sign-out finished (terminal refresh-token failure); host runs teardown + routes to login |
-| `syncNotificationActions` | `SB_SyncNotificationAction` | sync-lifecycle notification actions the host surfaces as OS notifications (replaces the former `SB_SyncNotificationHandler` seam) |
+| `subscriptionLost` | `Unit` | the server rejected an authenticated call for no active device subscription; host signs the user out + explains why (see §3.2.1) |
+
+#### 3.2.1 `subscriptionLost` and the subscription block
+
+When the server rejects an authenticated call because the account has no active device subscription,
+the SDK does two things: it emits `subscriptionLost`, and it enters a **subscription block** — it
+drops the BLE link and refuses to auto-connect or sync until the block lifts. The block is a
+data-exfil guard, not a UI state: BLE sync pulls data off the band with no server round-trip, so the
+gate is persisted and deliberately survives relaunch.
+
+What a host needs to know:
+
+- **The band is inert while blocked.** No auto-connect on launch, no reconnect after a drop. The
+  paired record stays, and pairing a *new* band still works, so "paired but never connects" is the
+  shape the user sees.
+- **It can arrive in any app state, and not only after a call you made.** Background uploads and the
+  SDK's own foreground re-verification both reach the server, so this can land mid-session, while
+  backgrounded, or moments after launch. Act on it without needing a screen to present on: sign the
+  user out first and explain afterwards. Gating the sign-out behind a dialog is what left iOS users
+  signed in with a dead band and no explanation (SB-1884) — MySensr signs out immediately, states the
+  reason on the onboarding landing, and adds a local notification when the app was not in front of the
+  user.
+- **It lifts by itself when the subscription is genuinely fine.** Any successful authenticated RPC
+  clears the block and reconnects the band — the server gates its whole authenticated surface on the
+  subscription, so a `200` is proof. A block armed by a transient server condition therefore heals on
+  the next successful call or the next foreground, with no alert and no user action.
+- **Inconclusive is not "cleared".** Offline or a transport failure leaves the block standing and
+  re-checks next foreground, rather than freeing the band on no evidence.
+
+So the host's job is only the sign-out plus the explanation. Do not build a local mirror of the
+blocked state, and do not treat one emission as permanent — the SDK owns the lifecycle and stops
+emitting once the server stops rejecting.
 
 #### `spotCheckReport` — the report, before the upload
 
@@ -317,7 +358,7 @@ all-set screen.
 | Member | Type | Notes |
 |---|---|---|
 | `remoteGlobals` | `SB_RemoteGlobals` | goals/branding globals |
-| `rawDataEnabled` | `val Boolean` | whether raw sensor logging is active (sensor-config raw channel or legacy `rawSensorDataLogging`); raw logging fills device storage faster, so the host shortens its "haven't synced" reminder (§3.2 `syncNotificationActions`) when true |
+| `rawDataEnabled` | `val Boolean` | whether raw sensor logging is active (sensor-config raw channel or legacy `rawSensorDataLogging`); raw logging fills device storage faster, so the host shortens its "haven't synced" reminder (armed off §3.2 `syncCompleted`) when true |
 | `attachRemoteGlobals(owner)` / `refreshGlobalState()` | — / `suspend (): SB_OrgMembership` | globals lifecycle auto-refresh / manual refresh returning org membership |
 | `deviceId` | `val String` | SDK-owned stable per-install id (generated + persisted in `sdk_prefs`); read-only — the host reads it only to tag its own analytics with the same id |
 | `clearLocalRecordingState()` | — | recording-state lifecycle |
@@ -335,8 +376,12 @@ writes its logs to (unset = silent). App identity is supplied once as configurat
 Everything a host previously wired as a supplied callback or implemented interface is now delivered
 through the observable event streams (§3.2) — the host **observes**, it does not implement a seam:
 
-- **Sync notifications** — observe `syncNotificationActions` and raise OS notifications from it.
+- **Sync notifications** — observe `syncCompleted` and arm your own "haven't synced" reminder from it
+  (it fires on both the detailed drain and the nothing-to-fetch short-circuit, so either way the band
+  was reached). Removed in favour of this: a `syncNotificationActions` stream of explicit
+  SCHEDULE/CANCEL requests, which armed off *connection* events rather than off a sync.
 - **Involuntary sign-out** — observe `signOutComplete`, run teardown, and route to login.
+- **Lapsed device subscription** — observe `subscriptionLost`, sign out, and explain why (§3.2.1).
 - **Analytics** — observe `analyticsEvents` and forward them to your backend.
 
 ---
@@ -390,11 +435,11 @@ care which). These users have **no** Sensor Bio email/password. On success the S
 returned session and publishes `session` / `userProfileFlow`. It is the **only** registration path in
 the distributed SDK — there is no email/password entry point.
 
-- **`sdkKeyCredentials`** — set `SensorBioSDK.sdkKeyCredentials = SB_SdkKeyCredentials(orgId, sdkKey)`
+- **`sdkKeyCredentials`** — set `SensorBioSDK.sdkKeyCredentials = SB_SDKKeyCredentials(org_id, sdk_token)`
   **once at launch** (like `environment`) with the server-issued organization credentials for your
-  integration (from your Sensor Bio dashboard); the backend validates that the key is active and belongs
-  to `orgId`. A non-null value puts the SDK in **SDK-key mode**; it is held in memory only and never
-  persisted. `registerUser` reads these — it no longer takes `orgId`/`sdkKey` parameters (iOS parity) —
+  integration (from your Sensor Bio dashboard); the backend validates that the token is active and belongs
+  to `org_id`. A non-null value puts the SDK in **SDK-key mode**; it is held in memory only and never
+  persisted. `registerUser` reads these — it no longer takes `org_id`/`sdk_token` parameters (iOS parity) —
   and fails if `sdkKeyCredentials` is unset.
 - **`userId`** — your own stable identifier for the end-user (`client_sdk_user_id`). The first call for
   a given `userId` registers; subsequent calls log in. It is also recorded as the user's **username**
@@ -415,7 +460,7 @@ Every failure resolves to a typed `SB_RegisterUserOutcome` — it does not throw
 
 ```kotlin
 // Set once at launch (in-memory, never persisted):
-SensorBioSDK.sdkKeyCredentials = SB_SdkKeyCredentials(orgId = orgId, sdkKey = sdkKey)
+SensorBioSDK.sdkKeyCredentials = SB_SDKKeyCredentials(org_id = orgId, sdk_token = sdkToken)
 
 when (val outcome = SensorBioSDK.registerUser(userId = userId)) {
     is SB_RegisterUserOutcome.Success               -> routeToHome(outcome.session)
@@ -812,7 +857,7 @@ step and no cache-version bump needed.
 ~276 public `SB_*` types the facade returns/accepts. Grouped index:
 
 - **User / auth** — `SB_UserProfile`, `SB_UserDemographics`, `SB_UserAppSettings`, `SB_Session`,
-  `SB_SdkKeyCredentials`,
+  `SB_SDKKeyCredentials`,
   `SB_RegisterUserOutcome` (+`SB_ServiceErrorCode`), `SB_ChangePasswordOutcome`,
   `SB_EmailAvailabilityOutcome`, `SB_UpdateUserProfileOutcome`, `SB_RequestPasswordResetOutcome`,
   `SB_AgreementCheck`, `SB_Gender`, `SB_UserProfileUpdate`,
@@ -831,6 +876,13 @@ step and no cache-version bump needed.
   `SB_SleepStage`, `SB_SleepBiometrics`, `SB_SleepScore`(+factors/penalties/sections), `SB_SleepPosition`,
   `SB_SleepDisturbances`, `SB_SleepApneaInfo`, `SB_SleepAccounting`, `SB_SleepDebt*`, `SB_SleepMetric`,
   `SB_SleepWriteError`, `SB_DetectedSleep`. (~40 types)
+  `SB_SleepBedtimeRecommendation` carries **no calibration block** — a recommendation only exists once
+  the user is out of the calibration window, so `SB_SleepDetailDay.bedtimeRecommendation` is `null`
+  while the server is still calibrating rather than a recommendation with empty times. Hosts render
+  nothing for that state. `SB_CalibrationInfo` (`totalDays` / `pendingDays`) is still
+  surfaced on `SB_SleepAccounting`, which *does* render a calibrating state. It carries **no
+  `message`**: the server sends a pre-rendered sentence for this phase, but the SDK drops it so the
+  copy — and its localization — stays the host app's to own, built from the two day counts.
 - **Activity / workout / steps** — `SB_TrainedActivity`, `SB_ActivityRecordingList`,
   `SB_ActivitySummary`, `SB_WorkoutDetail`, `SB_WorkoutTimelineResult`, `SB_WorkoutSummaryMetric`,
   `SB_ModifyAction`, `SB_ModifyOutcome`, `SB_ExerciseZones`, `SB_StepsTrending`,
@@ -864,7 +916,7 @@ step and no cache-version bump needed.
   `SB_PopulationInsights`(+filters/histogram/radar), `SB_PopulationInsightsFilterList`,
   `SB_PopulationMetricType`, `SB_PopulationAgeGroup`, `SB_PopulationGender`, `SB_DailyStatsResponse`.
 - **Meditation** — `SB_MeditationGraph`, `SB_MeditationScore`(+factors/penalties).
-- **Events / elements** — `SB_NotificationElement`, `SB_SyncNotificationAction`.
+- **Events / elements** — `SB_NotificationElement`.
 - **Surveys / agreements** — `SB_BriefSurvey`(+Question/Answer/Type), `SB_AgreementType`.
 - **Goals / config** — `SB_Goals`, `SB_AppConfig`, `SB_AppType`, `CacheStrategy`, `SB_ViewGranularity`.
 - **Errors / results** — `SB_InsightError`, `SB_RecordStage`, `SB_UnitType`.
@@ -895,7 +947,7 @@ SensorBioSDK.signOutComplete.onEach { logoutAndShowLogin() }.launchIn(appScope)
 // Register-or-login a user your app has already authenticated by its own means. Set the org
 // credentials once (in-memory, never persisted), then call registerUser with your own stable user id:
 // the first call for a given userId registers, later calls sign the same user back in.
-SensorBioSDK.sdkKeyCredentials = SB_SdkKeyCredentials(orgId = ORG_ID, sdkKey = SDK_KEY)
+SensorBioSDK.sdkKeyCredentials = SB_SDKKeyCredentials(org_id = ORG_ID, sdk_token = SDK_TOKEN)
 when (val outcome = SensorBioSDK.registerUser(userId = myUserId)) {
     is SB_RegisterUserOutcome.Success -> onSignedIn(outcome.session)
     is SB_RegisterUserOutcome.Failed  -> showError(outcome.code)

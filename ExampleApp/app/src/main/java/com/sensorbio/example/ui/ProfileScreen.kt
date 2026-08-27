@@ -54,9 +54,11 @@ fun ProfileScreen(usernameOrEmail: String) {
     LaunchedEffect(profile) {
         val p = profile ?: return@LaunchedEffect
         if (!prefilled) {
-            year = p.birthday.year.takeIf { it > 0 }?.toString() ?: ""
-            month = p.birthday.month.takeIf { it > 0 }?.toString() ?: ""
-            day = p.birthday.day.takeIf { it > 0 }?.toString() ?: ""
+            // `birthday` is null when the server has none — the fields stay empty rather than
+            // showing a sentinel date, and the zero-check these lines used to need is gone.
+            year = p.birthday?.year?.toString() ?: ""
+            month = p.birthday?.month?.toString() ?: ""
+            day = p.birthday?.day?.toString() ?: ""
             height = p.heightCM?.let { "%.0f".format(it) } ?: ""
             weight = p.weightKG?.let { "%.1f".format(it) } ?: ""
             prefilled = true
@@ -105,9 +107,12 @@ fun ProfileScreen(usernameOrEmail: String) {
                             try {
                                 val update = SB_UserProfileUpdate(
                                     fullName = p.name,
-                                    birthdayYear = year.toIntOrNull() ?: p.birthday.year,
-                                    birthdayMonth = month.toIntOrNull() ?: p.birthday.month,
-                                    birthdayDay = day.toIntOrNull() ?: p.birthday.day,
+                                    // The update RPC always writes a birthday, so an edit has
+                                    // to state one. Fall back to the profile's, else the neutral
+                                    // date the SDK's registerUser substitutes.
+                                    birthdayYear = year.toIntOrNull() ?: p.birthday?.year ?: 1990,
+                                    birthdayMonth = month.toIntOrNull() ?: p.birthday?.month ?: 6,
+                                    birthdayDay = day.toIntOrNull() ?: p.birthday?.day ?: 15,
                                     gender = p.sex,
                                     heightCm = height.toFloatOrNull() ?: p.heightCM,
                                     weightKg = weight.toFloatOrNull() ?: p.weightKG,
