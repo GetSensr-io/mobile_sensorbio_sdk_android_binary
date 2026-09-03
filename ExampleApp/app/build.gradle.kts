@@ -45,7 +45,7 @@ configurations.configureEach {
 dependencies {
     // The entire SensorBio integration: one coordinate, resolved from the public Maven repo.
     // It brings the embedded BLE + edge binaries and declares its OSS transitive deps (incl. coroutines).
-    implementation("com.sensorbio:sensorbio-sdk:2.1.0")
+    implementation("com.sensorbio:sensorbio-sdk:2.2.0")
 
     val composeBom = platform("androidx.compose:compose-bom:2024.09.03")
     implementation(composeBom)

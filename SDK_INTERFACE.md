@@ -36,7 +36,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:2.1.0")
+    implementation("com.sensorbio:sensorbio-sdk:2.2.0")
 }
 ```
 
@@ -119,6 +119,8 @@ event streams, recording control, device & BLE control (§3.4), and the flat ser
 | `recordingState` | `SB_RecordingState` | recording FSM (Idle / Recording(elapsed,target) / Finalizing(phase)) |
 | `canFinalize` | `Boolean` | whether the active recording may be finished early |
 | `isRecordingPaused` | `StateFlow<Boolean>` | whether the active recording is paused (drives the Pause/Resume button); `false` off-session |
+| `recordingHRSeries` | `StateFlow<List<SB_TimeValuePoint>>` | the recording's HR, complete — live samples merged with the rows synced from the band, anchored at the recording's start, paused spans excluded, ascending. **Bind a chart to this rather than accumulating `hr`**: `hr` is a live BLE passthrough, so a chart fed from it has a hole the width of any disconnect. Current *or most recent* recording; reset by the next recording's start, not by finalize |
+| `recordingPauseSegments` | `StateFlow<List<SB_TimeSegment>>` | the recording's completed pause windows, in `recordingHRSeries`' timebase. Band these on the chart — since the series back-fills, a gap that isn't listed here is missing data, not a pause. Completed windows only; a pause in progress appears on resume (`isRecordingPaused` covers the live state) |
 | `lastSyncedTemp` | `SB_LiveMetric?` | latest skin-temp reading from sync as a dashboard live-metric (value/unit in the user's °C/°F units); null until first |
 | `exerciseZoneAttributes` | `SB_ExerciseZoneAttributes?` | HR effort-zone config; null when unconfigured, auto-clears on logout |
 | `buttonTaps` | `StateFlow<Int?>` | latest device button-tap count. Pairing no longer needs this — the SDK consumes it internally to detect the confirmation press (§3.4 *Pairing*); null until first tap |
@@ -149,6 +151,17 @@ event streams, recording control, device & BLE control (§3.4), and the flat ser
 > produce a number should substitute `SB_UserProfile.DEFAULT_AGE_YEARS`, which is
 > what the SDK's own internal compute uses and is the same on both platforms.
 
+> **A body metric of zero means "unset", and `BMR` now reports that.** Profile
+> scalars arrive from the server as proto3 floats, where "not set" *is* `0` —
+> there is no null — so `SB_UserProfile.weightKG` / `heightCM` are `0f`, never
+> `null`, for a user who never entered one. A plain null check does not catch
+> that. As of SB-2004 `SB_UserProfile.BMR` returns `null` when weight or height
+> is zero (or non-finite), not just when it is absent; previously it returned a
+> BMR computed from 0 kg, which fed wrong resting calories downstream. Host code
+> reading `weightKG` / `heightCM` directly should apply the same `> 0` test — the
+> value being present is not the same as it being real. iOS has the matching
+> behaviour in its `currentUserBMR` (SB-2002).
+
 ### 3.2 Event streams — `SharedFlow` (one-shot)
 
 | Flow | Payload | Purpose |
@@ -156,12 +169,13 @@ event streams, recording control, device & BLE control (§3.4), and the flat ser
 | `deviceReset` | `SB_DeviceResetResult` | device-reset outcome |
 | `analyticsEvents` | `SB_AnalyticsEvent` | SDK telemetry events incl. recording start/end (name + properties); host forwards to its backend |
 | `latestBookend` | `SB_LatestBookend` | activity window resolved by sync (spot-check confirm) |
-| `captureEnded` | `SB_CaptureEndEvent` | the band reported capture ended, with the reason (`SB_CaptureEndReason`: worn-stop / timer / firmware / button / our own BLE stop). Decoded from the firmware `.event` packet, which is written unconditionally even when the bookend is skipped, so it is the dependable end-of-session signal. Consumed internally by the recording engine (SB-1745); hosts may observe it but need not |
 | `deviceLinkFailed` | `SB_DeviceLinkFailure` | a device-link (serial-enforcement) rejection; host alerts "wrong device" / retry |
 | `firmwareProgress` | `Float` | raw firmware-flash progress percent (0–100); pairs with the suspend `updateFirmware()` (§3.4) |
 | `syncCompleted` | `SB_SyncResult?` | a device sync drained; non-null on detailed completion, null on short-circuit |
 | `biometricRecordResult` | `SB_BiometricRecordResult` | spot-check submit outcome (recording id on success / error on terminal failure) |
 | `spotCheckReport` | `SB_SpotCheckDetails` | the spot check's report, built from local data at finalize — **before** the submit and without waiting on it (see below) |
+| `activityReport` | `SB_WorkoutDetail` | a finished activity's report, built from local data at finalize — before the submit and without waiting on it (see below) |
+| `meditationReport` | `SB_MeditationGraph` | a finished meditation's report, built from local data at finalize (see below) |
 | `biometricRecordProcessed` | `Unit` | spot-check data synced + submit dispatched; host resets post-biometric UI |
 | `hr` / `hrv` / `rr` / `snr` / `bbi` / `ppg` | `SB_HeartRateSample` / `SB_HrvSample` / `SB_RespiratoryRateSample` / `SB_SnrSample` / `SB_BbiSample` / `SB_PpgSample` | high-frequency per-sample biometric streams during a live/manual session (buffered + `DROP_OLDEST`) |
 | `ecg` | `SB_EcgSample` | ECG waveform samples (V3 hardware) |
@@ -225,6 +239,25 @@ Neither error submits: a dataless submit leaves an in-flight card nothing can ev
 
 > **iOS divergence.** iOS publishes the same three verdicts as one `SB_SpotCheckReportEvent` enum (`.ready` / `.unscoreable` / `.deferred`) on its equivalent subject, because its finalize cannot throw. The information is identical; only the channel differs. iOS's `.ready` also omits `pdfReportURL` — Android's `SB_SpotCheckDetails` has no such field, so this report is complete.
 
+#### `activityReport` / `meditationReport` — the same idea for the other two types
+
+Every recording type now derives its report on the phone at finalize and keeps it, instead of the user waiting on a round trip, read-replica lag the server pads with sleeps, and a timeline refetch — for numbers the device already had. Both fire **exactly once per finalized recording**, on the fresh path and the restore-after-kill path alike.
+
+**There is no "not enough data" verdict on these two.** An activity or a meditation is a real event with a duration, a name and a time whether or not biometrics came through: if we have data we plot it, if we don't we don't. A window that captured no heart rate simply yields a `SB_WorkoutDetail` with a **null** `hrmData`, and the host leaves that chart out rather than rendering an empty axis. Spot check is the exception and keeps its three-way verdict, because its entire content *is* its biometrics and the server genuinely declines to score it.
+
+The reports are also **persisted** against their submission row, so a host that misses the emit — a relaunch, a recreated view model, the user backing out and returning — reads it back with `localWorkoutDetail` / `localMeditationGraph` (§5). `fetchWorkoutDetail` and `fetchMeditationGraph` already fall back to them automatically.
+
+**Two parity caveats, and they are the honest difference from spot check.** A spot check agrees with the server *by construction* — the phone derives the numbers, the submit ships them, the server stores them verbatim. These two do not:
+
+| report | what the server does differently | effect |
+|---|---|---|
+| `activityReport` | recomputes calories from its own copy of the HR series and its own 30-day resting-HR baseline, and picks between two calorie formulas with a deployment env flag (`CALORIE_FORMULA_VO2MAX`) the client cannot observe. The SDK implements the documented default (HR-only Keytel). | the headline calorie figure can settle slightly when the timeline entry lands |
+| `meditationReport` | recomputes the score on **every read**, against baselines drawn from the whole account; the SDK's come from local sleep history (sleep-gated, five-day minimum, median, "0 means not established"). | a device with less history than the account can score lower, or hit a not-scoreable sentinel the server would not |
+
+Hosts should refresh an on-screen report in place when the server entry lands rather than re-navigating.
+
+> **The movement penalty is always 0**, in the SDK and on the server both. The server variable feeding it is declared and never assigned, so the penalty has never contributed to any meditation it has scored. The SDK matches what the server *does*, not what it appears to intend — "fixing" it locally would make every local score read low.
+
 ### 3.3 Recording control (suspend, on the facade)
 
 | Member | Signature | Notes |
@@ -240,6 +273,18 @@ Neither error submits: a dataless submit leaves an in-flight card nothing can ev
 | `resumeActiveRecording` | `() -> Unit` | resume a recording persisted across a process kill (crash-restore / app launch). Since SB-1745 this is *restore*, not blindly *resume*: if the persisted envelope carries a stop intent (the user had already tapped End before the process died) it re-enters finalize at the persisted stop instant instead of resuming the count-up; if the envelope is older than 24h with no stop intent it is discarded rather than resurrected. Only a genuinely still-running session resumes live |
 | `activeRecording` | `val SB_PersistedRecording?` | crash-restore: a recording persisted across process death |
 | `activeRecordingState` | `val SB_ActiveRecordingInfo?` | flat snapshot of the live activity/meditation recording the engine is driving (for the live screen) |
+
+**Tick cadence vs. publish cadence (SB-1949).** Activity/meditation run a 200ms timer loop and spot
+check its own 250ms one, but on **both** paths `recordingState` is published **only when the whole
+second changes** — at most once per second — and the `elapsedMs` it carries is floored to that whole
+second. Hosts driving a `MM:SS` display or a `targetMs - elapsedMs` countdown see no difference; hosts
+that were relying on sub-second `elapsedMs` resolution will now see whole seconds. Both loops are
+retained at their original cadence because each is also the poll interval for its countdown expiry, so
+auto-stop precision is unchanged. (Publishing raw milliseconds made every emission a distinct value
+that no `StateFlow` collector could dedupe: four to five recompositions a second, per collector, for
+the length of a recording. Measured on a Pixel 10 Pro over matched 20-minute screen-on activity
+recordings, coalescing plus the host-side chart and animation fixes was worth ~13% of app CPU and ~12%
+of battery drain.)
 
 ### 3.4 Device & BLE control (on the facade)
 
@@ -404,13 +449,14 @@ Called directly on `SensorBioSDK.<method>(…)`. One-shot reads are `suspend fun
 | Local-first sleep disturbances | `getSleepArmDisturbances(sessionEndTimestamp: Long) -> List<SB_SleepDisturbancePoint>` *(the session's arm-restlessness severity timeline, bucketed from on-device `activity_packets`; colour-free `SB_SleepDisturbanceLevel` per epoch; fully local, no fallback; see §5.7)* |
 | Trending | `fetchRangeHR`/`fetchDailyHR`, `fetchRangeHRV`/`fetchDailyHRV`, `fetchRangeRR`/`fetchDailyRR`, `fetchRangeSpO2`/`fetchDailySpO2`, `fetchCalories`, `fetchSteps`, `fetchDailyActivityDetail`, `fetchRangeRecovery`/`fetchDailyRecovery` *(all take `date: Instant`; `forceRemote` optional)*. **All four daily biometric reads return the same `SB_BiometricDailyTrending` — see §5.10.** Stale-then-fresh `Flow` siblings: `rangeHRUpdates`/`dailyHRUpdates`, `rangeHRVUpdates`/`dailyHRVUpdates`, `rangeRRUpdates`/`dailyRRUpdates`, `rangeSpO2Updates`/`dailySpO2Updates`, `caloriesUpdates`, `stepsUpdates`, `dailyActivityDetailUpdates`, `rangeRecoveryUpdates`/`dailyRecoveryUpdates`. *(`fetchDailyRecovery`/`dailyRecoveryUpdates` are computed on-device where possible — see §5.8; `fetchDailyActivityDetail`/`dailyActivityDetailUpdates` likewise for `DAY` — see §5.9)* |
 | Sleep | `fetchSleepDetail(endDate: Instant, endTimestamp, forceRemote?)`, `fetchSleepAggregation(date: Instant, …, forceRemote?)` *(+ `sleepDetailUpdates(endDate: Instant, endTimestamp, forceRemote?): Flow<SB_SleepDetailDay>` / `sleepAggregationUpdates(date: Instant, …, forceRemote?): Flow<SB_SleepDetailAggregated>` stale-then-fresh streams)*, `fetchSleepSessions(date: Instant)`, `deleteSleepSession(endTimestamp, date: Instant)`, `modifySleepSession(onset: Instant, wakeUp: Instant, endTimestamp, date: Instant) -> String`, `addSleepSession(onset: Instant, wakeUp: Instant)` *(writes throw `SB_SleepWriteError`)* |
-| Workouts | `fetchWorkoutDetail(workoutTime: Instant)`, `modifyWorkout(action, date: Instant, timestamp: Instant, …)`, `fetchWorkoutSummary(date: Instant, granularity: SB_SummaryGranularity, workoutName, workoutTime: Instant)`, `fetchWorkoutTimeline(…, direction: SB_PageFetchDirection) -> SB_WorkoutTimelineResult`, `fetchWorkoutRecordingInfo` |
+| Workouts | `fetchWorkoutDetail(workoutTime: Instant)` *(falls back to the locally-built report — §5.11)*, `modifyWorkout(action, date: Instant, timestamp: Instant, …)`, `fetchWorkoutSummary(date: Instant, granularity: SB_SummaryGranularity, workoutName, workoutTime: Instant)`, `fetchWorkoutTimeline(…, direction: SB_PageFetchDirection) -> SB_WorkoutTimelineResult`, `workoutTimelineUpdates() -> Flow<SB_WorkoutTimelineResult>` *(stale→fresh first page — §5.12)*, `fetchWorkoutRecordingInfo` |
 | In-flight submissions | `reconcileSubmissions(entries: List<SB_WorkoutEntry>)` *(flip matched in-flight cards → processed; call after each `fetchWorkoutTimeline` with `result.items.flatMap { it.entries }`; no network)*, `retrySubmission(startTimestamp)` *(re-drive a FAILED submission)* — observe via `inflightSubmissions` (§3.1) |
+| Local-first reports | `localRecordingEntries() -> List<SB_LocalRecordingEntry>` *(suspend; real timeline rows for recordings the server hasn't returned — §5.11)*, `localWorkoutDetail(startTimestamp)`, `localMeditationGraph(startTimestamp)`, `localSpotCheckDetails(startTimestamp)` *(all suspend; the stored report, or null)* |
 | Activities | `fetchActivityList(force: Boolean = false) -> SB_ActivityRecordingList`, `fetchTrainedActivities()` |
 | Spot-check | `fetchSpotCheckDetails(recordingId)` *(one-shot suspend read; throws on RPC error)* |
 | Recording meta | `fetchRecordingMetaInfo(type) -> List<SB_RecordingSessionMetaItem>`, `deleteRecordingMeta(id, name, type)` |
 | Insights | `fetchNewInsights`, `submitInsightsFeedback`, `fetchPopulationInsightsMetricList`, `fetchPopulationInsights` |
-| Meditation | `fetchMeditationGraph(date: Instant, sessionTimestamp)` |
+| Meditation | `fetchMeditationGraph(date: Instant, sessionTimestamp)` *(falls back to the locally-built report — §5.11)* |
 | Surveys | `submitBriefSurvey(survey)` *(suspend; awaits the upload)* |
 | Goals | `fetchGoals()`; `updateGoals(steps, calories, sleep)` *(suspend → `SB_UpdateGoalsOutcome`)* |
 | Stats | `fetchDailyStats(startDate, days, includeBiometrics, includeSleep, includeSteps)` |
@@ -514,16 +560,26 @@ falling back to cache only on failure.
 
 ### 5.2 Local-first HR points
 
-`getHRPoints(date)` returns a day's HR samples **local-first**: it reads the day's on-device HR (local midnight→midnight in the device time zone) with **no** API round-trip when that data is already synced locally. Each point is tagged `AWAKE` / `ASLEEP` from the device's sleep sessions (`ASLEEP` = the point's epoch falls inside a session's `[sleepOnset, wakeUp)` window). Only when the day predates local sync (no local HR for the window) does it fall back to the API — one daily-HR fetch + one sleep fetch — backfill the HR + sleep locally, and rebuild, so a subsequent call for the same day is served entirely from the device. The first feature of the reusable `offlinefirst` surface (iOS-parity `getHRPoints(date:)`).
+`getHRPoints(date)` returns a day's HR samples **local-first**: it reads the day's on-device HR with **no** API round-trip when that data is already synced locally. Each point is tagged `AWAKE` / `ASLEEP` from the device's sleep sessions. Only when the day predates local sync (no local HR for the window) does it fall back to the API — one daily-HR fetch + one sleep fetch — backfill the HR + sleep locally, and rebuild, so a subsequent call for the same day is served entirely from the device. The first feature of the reusable `offlinefirst` surface (iOS-parity `getHRPoints(date:)`).
+
+The day a sample belongs to, and whether it counts as asleep, follow the server's daily-trending contract exactly (SB-1997). A day is **local midnight→midnight plus the full `[onset, wakeUp]` span of every sleep _filed under_ that day** — and a sleep is filed under the day it **ends**, not the day it began. So for a 10pm–7am night:
+
+* asking for the **wake** day returns samples starting at **10pm the previous evening**, all tagged `ASLEEP`;
+* asking for the day that night **started** returns midnight→midnight only, and its 10pm–midnight block is tagged `AWAKE`, because the sleep covering it belongs to the next day.
+
+A point is `ASLEEP` **iff** it falls inside one of that day's own sleeps — not merely inside any sleep. Callers that plot these points must let the x-axis start before midnight, since the first sample routinely does.
+
+The three **resting** figures (`restingHR` / `restingHRV` / `restingRR`) follow the server's other rule: each is derived from the day's **longest sleep alone**, by that metric's own algorithm — not by averaging the day's `ASLEEP` samples. A day with a nap therefore has one set of sleeps driving the point tags and a single, narrower window driving the headline number.
 
 ```kotlin
 suspend fun getHRPoints(date: Instant): SB_HRDataPoints
 
-data class SB_HRDataPoints(val points: List<SB_HRDataPoint>) {
-    // Computed on the fly from `points`; each is null when its input set is empty
-    // (and `averageRHR` is null when there are no ASLEEP points — never a misleading 0).
+data class SB_HRDataPoints(val points: List<SB_HRDataPoint>, val restingHR: Int?) {
+    // Computed on the fly from `points`; each is null when `points` is empty
     val averageHR: Int?   // mean value of all points
-    val averageRHR: Int?  // mean value of ASLEEP points (resting HR)
+    val restingHR: Int?   // STORED, not computed: server-parity CalculateRestingBPM over the day's
+                          // LONGEST sleep (mean of its 5 lowest outlier-free samples). Not a mean
+                          // of the ASLEEP points, which reads several bpm high.
     val lowestHR: Int?    // min value
     val highestHR: Int?   // max value
 }
@@ -548,10 +604,11 @@ suspend fun getHRVPoints(date: Instant): SB_HRVDataPoints
 
 data class SB_HRVDataPoints(val points: List<SB_HRVDataPoint>) {
     // Computed on the fly from `points`; each is null when its input set is empty.
-    // Mirrors the HRV day view (rMSSD + daily-average / lowest / highest): `averageRestingHRV`
+    // Mirrors the HRV day view (rMSSD + daily-average / lowest / highest): `restingHRV`
     // (mean of ASLEEP/nocturnal points) is the offline proxy for the server's sleep-derived rMSSD.
     val averageHRV: Int?          // mean value of all points (daily average)
-    val averageRestingHRV: Int?   // mean value of ASLEEP points (nocturnal — rMSSD-parity primary)
+    val restingHRV: Int?          // STORED: server-parity CalculateRestingHRV over the day's LONGEST
+                                  // sleep — the residual-filtered regression line read off at wake-up
     val lowestHRV: Int?           // min value
     val highestHRV: Int?          // max value
 }
@@ -574,11 +631,11 @@ suspend fun getRRPoints(date: Instant): SB_RRDataPoints
 
 data class SB_RRDataPoints(val points: List<SB_RRDataPoint>) {
     // Computed on the fly from `points`; each is null when its input set is empty.
-    // Mirrors the RR day view (brpm + daily-average / lowest / highest): `averageRestingRR`
+    // Mirrors the RR day view (brpm + daily-average / lowest / highest): `restingRR`
     // (mean of ASLEEP/nocturnal points) is the offline proxy for the server's sleep-derived brpm.
     // Unlike HR/HRV these are Float — RR is inherently fractional (matches the API path's brpm).
     val averageRR: Float?          // mean value of all points (daily average)
-    val averageRestingRR: Float?   // mean value of ASLEEP points (nocturnal — brpm-parity primary)
+    val restingRR: Float?          // STORED: mean over the day's LONGEST sleep, to one decimal
     val lowestRR: Float?           // min value
     val highestRR: Float?          // max value
 }
@@ -643,9 +700,21 @@ The model mirrors the server (`physicalstats.getCalorieVal`) exactly. Each inter
 
 - `stepCalories   = max(0, totalStepCalories − workoutStepCalories)`
 - `workoutCalories = max(0, workoutCalories)`
-- `activeCalories = stepCalories + workoutCalories` (always = the interval's `totalStepCalories`)
+- `activeCalories = max(0, stepCalories + workoutCalories)` — the floor is **per point**, as the server's `getCalorieVal` applies it. Inside a workout the workout part is **recomputed from HR** (`CalculateRestingBPM`'s sibling `computeWorkoutCaloriesPerMinute`), not the band's step calories relabelled, and the model leaves a below-resting minute negative. So `totalActiveCalories` is **not** necessarily `totalStepCalories + totalWorkoutCalories` — each is floored on its own, exactly as the server's tiles are.
 
-so **Active is unaffected by workouts** — only the Workout↔Steps split moves. On device the band never reports the split; it is reconstructed from the day's **on-device workout sessions** for locally-synced days (a minute inside a workout session counts as workout, exactly as the server reclassifies it), and from the **server calories graph** for backfilled days (the unified backfill persists the server's per-hour split into the rows' workout columns). Locally-synced non-workout minutes also apply the backend's per-minute step-calorie cap (`round(steps/10)` when the stored value exceeds `steps/10`) so the local Active total matches the server's. **Resting** is a day-level value from the user's BMR (`BMR × elapsed/86400` today, full `BMR` for a past day), and **Total = Active + Resting**. Active / Total / Resting are exact regardless of the workout split; the Workout/Steps split is exact on backfilled days and best-effort (from local workout sessions) on locally-synced days.
+so **Active is unaffected by workouts** — only the Workout↔Steps split moves. On device the band never reports the split; it is reconstructed from the day's **activities** for locally-synced days (a minute inside an activity counts as workout, exactly as the server reclassifies it), and from the **server calories graph** for backfilled days (the unified backfill persists the server's per-hour split into the rows' workout columns). Locally-synced non-workout minutes also apply the backend's per-minute step-calorie cap (`round(steps/10)` when the stored value exceeds `steps/10`) so the local Active total matches the server's. **Resting** is a day-level value from the user's BMR (`BMR × elapsed/86400` today, full `BMR` for a past day), and **Total = Active + Resting**. Active / Total / Resting are exact regardless of the workout split.
+
+**Activity-complete (SB-2017).** The calculation always runs **on device**. The SDK reaches the network only for *inputs* it does not hold, never for a server-computed calorie figure — which is why the number is reproducible offline once the inputs are cached. Activity windows used to come only from recordings made on *this device since the last sign-out* (`upload_activity`, whose one writer is the recording flow and which `clearAllTables()` empties on sign-out), so a workout recorded on another phone — or before a logout or reinstall — was invisible and its calories silently read as `0`. Two inputs are now fetched and cached on demand:
+
+- **The day's activity list** — fetched once from the server and cached in `cached_activity_day`, then merged with the local recordings (the local copy wins where both describe the same activity, since only it knows the pauses). A completed past day's cached list is final; today's is refreshed at most every 15 minutes, and a recording made on this device appears immediately without any refresh.
+- **The HR those activities need** — when an activity window holds no on-device HR at all (the normal case for a workout recorded elsewhere), the day's HR is pulled into `ppg_data_results` through the same backfill the HR read uses.
+
+The derived per-minute attribution is kept in its own table (`workout_minute_attribution`) and joined against the activity rows at read time. **The band's packets are never rewritten**: sensor data is not overwritten with a derived value, which is also what keeps a server-authored split distinguishable from a computed one. The attribution is re-derived from its inputs on every read, so it can never serve a stale answer.
+
+Two known divergences from the server on an activity that was **not** recorded on this device, both of them limits of what the phone can ask for rather than defects in the model:
+
+- **HR density.** The server scores workout minutes from a per-second trace (`activity_biometrics`) that this app uploads but that has **no read endpoint**. The densest HR the phone can fetch back is the ~2-minute PPG trace behind the daily BPM graph, so a minute with no sample in it is left **unscored** rather than filled in from a neighbour — a synthesized sample would be a number nobody measured. A remote activity can therefore read low, in proportion to how much of its HR is missing. Adding a read endpoint for the per-second trace is what would close this.
+- **Pauses.** `WorkoutDetail` carries a `pause_segments` field that the server never populates for a workout, so a remote activity's pauses are not knowable and its HR is fed to the model unfiltered. A *paused* remote activity therefore reads slightly high. An activity recorded on this device has its pauses exactly, and an activity with no pause has nothing to exclude.
 
 The ring / progress tracks **Active** calories toward `goals.calories` (server parity). Totals are non-null (default `0`, a worn-but-idle day is a genuine `0`); no awake/asleep tag and no min/avg/max.
 
@@ -668,13 +737,13 @@ data class SB_CaloriesDataPoint(
     val epoch: Long,             // ms
     val stepCalories: Float,     // kcal
     val workoutCalories: Float,  // kcal
-) { val activeCalories: Float }  // = stepCalories + workoutCalories
+) { val activeCalories: Float }  // = max(0, stepCalories + workoutCalories), floored per point
 
 data class SB_CaloriesHourBucket(
     val hour: Int,               // 0..23 local hour of day
     val stepCalories: Float,     // kcal
     val workoutCalories: Float,  // kcal
-) { val activeCalories: Float }  // = stepCalories + workoutCalories
+) { val activeCalories: Float }  // = max(0, stepCalories + workoutCalories), floored per point
 ```
 
 `getCaloriesPoints` throws only on the server-backfill path (e.g. when signed out / the fetch fails); the pure-local path never touches the network. (iOS has no `getCaloriesPoints` yet — Android leads, as with steps/HRV/RR.)
@@ -850,6 +919,61 @@ yields a sleep block followed by an awake block — fine for a scatter set, wron
 Cached responses from an older build fail to decode once, are deleted, and refetch — no migration
 step and no cache-version bump needed.
 
+### 5.11 Local-first recording reports (SB-1953/1955/1957)
+
+Every recording type derives its report on the phone at finalize (§3.2) and **keeps** it, stored
+against its submission row under the recording's start timestamp — the same correlator
+`reconcileSubmissions` matches server entries on. Three reads follow from that.
+
+**The detail reads fall back on their own.** `fetchWorkoutDetail(workoutTime)` and
+`fetchMeditationGraph(date, sessionTimestamp)` return the stored local report when the server has no
+answer — a `NOT_FOUND` for a workout minutes old and not yet ingested, or any failure at all when
+offline. The server stays the authority whenever it has an answer, so a host needs no branch. There is
+no equivalent fallback inside `fetchSpotCheckDetails(id)`, because it is addressed by a server-assigned
+id that does not exist until the submit lands: there is no key to fall back *from*. Reach for
+`localSpotCheckDetails(startTimestamp)` directly while a row's `workoutId` is empty.
+
+**`localRecordingEntries()` returns real timeline rows**, not status placeholders. By the time a
+recording is in this list the phone has a complete report for it, so rendering a passive "Processing…"
+card is the app declining to show data it holds. Each entry carries a real `SB_WorkoutEntry` — the same
+shape the timeline read returns — so it renders through the host's existing row view and routes through
+its existing detail screens.
+
+Four merge rules, and each one is a bug if dropped:
+
+| rule | why |
+|---|---|
+| **Page 1 only** | these are minutes old and belong in today's group; a cursor page encodes a server-side query that must not be second-guessed |
+| **Dedup on the start timestamp at _second_ granularity** | `reconcileSubmissions` drops a row once its server entry appears, but there is a window where the entry has arrived and the submission hasn't flipped. Seconds rather than milliseconds because the spot-check server domain drops the sub-second remainder — exact-millisecond matching can never match a spot check |
+| **Not while searching or filtering** | a synthesized row has not been through the server's query |
+| **Group by `SB_LocalRecordingEntry.dateInt`** | supplied from the session's own timezone offset; re-deriving the day host-side is how a just-finished recording lands under yesterday's header |
+
+Also disable delete/modify on these rows — `modifyWorkout(REMOVE)` addresses a timeline entry that does
+not exist server-side yet. A submission with **no** stored report (a manually-logged session, or a row
+finalized before reports were persisted) is absent from this list and still appears in
+`inflightSubmissions`.
+
+> **iOS divergence.** iOS's `SB_LocalRecordingEntry` carries a fourth field, `scoredNoResult`, for a
+> spot check the server accepted but scored nothing for. Android has no such state: a spot check the
+> SDK cannot score is never submitted (`SB_RecordingError.NotEnoughData` throws out of
+> `recordDetailedBiometrics`), so no queue row exists for it.
+
+### 5.12 Cached timeline first page (SB-1959)
+
+`workoutTimelineUpdates()` is a stale→fresh `Flow` over the timeline's **first page**: it emits the
+last-known page from disk immediately — so the screen paints real rows on a cold launch instead of a
+skeleton, and shows something at all when offline — then the authoritative fetch. It can therefore
+deliver page 1 **twice**, so a host must *assign* rather than append when applying it.
+
+Only the plain page-1 read is cached: no cursor, no search term, no explicit date, `DOWN`. A cursor
+encodes the query server-side and is ephemeral; a searched or filtered read is a query whose answer must
+come from the server. Both go through `fetchWorkoutTimeline` and are never cached.
+
+The cached copy is delivered with its **cursor stripped**. A restored cursor would page the user into a
+window the server no longer recognises, which is worse than having none — with it empty the host simply
+has no cursor until the authoritative page lands a moment later, and its infinite-scroll loader is
+already gated on having one.
+
 ---
 
 ## 6. Domain types (`SB_*`)
@@ -870,7 +994,7 @@ step and no cache-version bump needed.
 - **Recording** — `SB_RecordingState`, `SB_RecordingFinalizationPhase`, `SB_RecordingMetaType`,
   `SB_RecordingSession`, `SB_RecordingInfo`, `SB_RecordingCustomization`, `SB_PersistedRecording`, `SB_ActiveRecordingInfo`,
   `SB_RecordingError`, `SB_RawSensorDataLogging`, `SB_SpotCheckDetails`,
-  `SB_SubmitFinishedRecordingResult`, `SB_LatestBookend`, `SB_CaptureEndEvent` / `SB_CaptureEndReason`, `SB_BiometricRecordResult`,
+  `SB_SubmitFinishedRecordingResult`, `SB_LatestBookend`, `SB_BiometricRecordResult`,
   `SB_ExerciseZoneAttributes` / `SB_HREffortZone`.
 - **Sleep** — `SB_SleepItem`, `SB_SleepDetailDay`, `SB_SleepDetailAggregated`, `SB_SleepStages`,
   `SB_SleepStage`, `SB_SleepBiometrics`, `SB_SleepScore`(+factors/penalties/sections), `SB_SleepPosition`,
@@ -887,7 +1011,7 @@ step and no cache-version bump needed.
   `SB_ActivitySummary`, `SB_WorkoutDetail`, `SB_WorkoutTimelineResult`, `SB_WorkoutSummaryMetric`,
   `SB_ModifyAction`, `SB_ModifyOutcome`, `SB_ExerciseZones`, `SB_StepsTrending`,
   `SB_StepMetric`, `SB_StepMetricType`, `SB_ActivityDetail`, `SB_ActivityScore`,
-  `SB_SummaryGranularity`, `SB_PageFetchDirection`,
+  `SB_SummaryGranularity`, `SB_PageFetchDirection`, `SB_LocalRecordingEntry`,
   `SB_WLSRecordingType`, `SB_WorkoutRecordingInfo`(+`SB_OngoingWorkoutProgram`).
 - **Biometrics / metrics** — one shared daily family
   `SB_BiometricDailyTrending`(+`SB_BiometricDailyGraph`, `SB_BiometricPoint`, `SB_BiometricValueType`)
@@ -898,11 +1022,11 @@ step and no cache-version bump needed.
   `SB_EcgSample` (§3.2); `SB_LiveMetric`; `SB_HRMData`(+`SB_HRMCategory`); `SB_TimeValuePoint`, `SB_DateValuePoint`,
   `SB_BarGraph`, `SB_CalorieMetric`, `SB_CaloriesTrending`, `SB_CardioStats`;
   `SB_SkinTemperature`(+`SB_SkinTemperature.Point`) — on-device day summary from `getSkinTemperature(date)`, all Celsius.
-  `SB_HRDataPoints`(+`SB_HRDataPoint`, `SB_HRPointType{AWAKE,ASLEEP}`) — local-first day HR from `getHRPoints(date)` (§5.2); the container computes `averageHR`/`averageRHR`/`lowestHR`/`highestHR` on the fly (nullable, never a misleading 0).
-  `SB_HRVDataPoints`(+`SB_HRVDataPoint`; reuses `SB_HRPointType`) — local-first day HRV from `getHRVPoints(date)` (§5.3); the container computes `averageHRV`/`averageRestingHRV`/`lowestHRV`/`highestHRV` on the fly (nullable, never a misleading 0).
-  `SB_RRDataPoints`(+`SB_RRDataPoint`; reuses `SB_HRPointType`) — local-first day RR from `getRRPoints(date)` (§5.4); the container computes `averageRR`/`averageRestingRR`/`lowestRR`/`highestRR` on the fly (nullable, never a misleading 0).
+  `SB_HRDataPoints`(+`SB_HRDataPoint`, `SB_HRPointType{AWAKE,ASLEEP}`) — local-first day HR from `getHRPoints(date)` (§5.2); the container computes `averageHR`/`lowestHR`/`highestHR` on the fly and carries a stored `restingHR` (all nullable, never a misleading 0).
+  `SB_HRVDataPoints`(+`SB_HRVDataPoint`; reuses `SB_HRPointType`) — local-first day HRV from `getHRVPoints(date)` (§5.3); the container computes `averageHRV`/`lowestHRV`/`highestHRV` on the fly and carries a stored `restingHRV` (all nullable, never a misleading 0).
+  `SB_RRDataPoints`(+`SB_RRDataPoint`; reuses `SB_HRPointType`) — local-first day RR from `getRRPoints(date)` (§5.4); the container computes `averageRR`/`lowestRR`/`highestRR` on the fly and carries a stored `restingRR` (all nullable, never a misleading 0).
   `SB_StepsDataPoints`(+`SB_StepsDataPoint`, `SB_StepsHourBucket`) — local-first day steps from `getStepsPoints(date)` (§5.5); the container computes day totals `totalSteps`/`totalDistanceMeters`/`totalCalories`/`totalActiveSeconds` (active duration) + `hourlyBuckets` on the fly. No awake/asleep tag and no min/avg/max (steps are counts); totals are non-null (default 0).
-  `SB_CaloriesDataPoints`(+`SB_CaloriesDataPoint`, `SB_CaloriesHourBucket`) — local-first day calories from `getCaloriesPoints(date)` (§5.6); a faithful local recreation of the server's five calorie metrics. The container computes `totalActiveCalories` (ring) / `totalStepCalories` / `totalWorkoutCalories` / `totalCalories` (= active + resting) + `hourlyBuckets` on the fly, alongside the constructor's `restingCalories` (BMR-based). Each point splits its `totalStepCalories` into `stepCalories` + `workoutCalories` (server parity: `active = step + workout`). Shares the step rows; no awake/asleep tag, no min/avg/max; totals non-null (default 0).
+  `SB_CaloriesDataPoints`(+`SB_CaloriesDataPoint`, `SB_CaloriesHourBucket`) — local-first day calories from `getCaloriesPoints(date)` (§5.6); a faithful local recreation of the server's five calorie metrics. The container computes `totalActiveCalories` (ring) / `totalStepCalories` / `totalWorkoutCalories` / `totalCalories` (= active + resting) + `hourlyBuckets` on the fly, alongside the constructor's `restingCalories` (BMR-based). Each point splits its `totalStepCalories` into `stepCalories` + `workoutCalories`, with a workout minute's workout part recomputed from HR (server parity: `active = max(0, step + workout)`, floored per point). Shares the step rows; no awake/asleep tag, no min/avg/max; totals non-null (default 0).
   Local-first sleep reuses the server **Sleep** types above: `getSleepDetail(date)` (§5.7) returns an `SB_SleepDetailDay` rebuilt from the on-device `sleep_sessions` row (stage timeline + metric tiles populated; server-owned score/recommendations/accounting/biometric graphs/positions left empty).
 - **Recovery** — `SB_RecoveryRange*`, `SB_DailyRecovery*`, `SB_RecoveryScoreFactor/Section`. Each
   `SB_RecoveryScoreFactor` reports its `percentile` (0–100) and a pre-computed `scoreValue` — the
