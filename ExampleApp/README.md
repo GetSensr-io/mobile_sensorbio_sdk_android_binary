@@ -14,9 +14,19 @@ The pieces that matter:
   `ACCESS_FINE_LOCATION`, which BLE scanning needs at every API level). The SDK's own permissions +
   foreground service merge in.
 - **`ExampleApplication.kt`** — the required init pattern: `SensorBioSDK.initialize(...)` →
-  set `environment` → wire `logHandler`.
+  set `environment` → install `sdkTokenProvider` (so the SDK can ask for a single-use token whenever
+  it needs one) → wire `logHandler`.
+- **`SdkTokenExchange.kt`** — the `POST /sdk/v1/token` exchange that turns an organization SDK Key
+  into a single-use `sdk_token`, plus the `sdkTokenProvider` lambda the SDK pulls when a session needs
+  rebuilding. **In a real integration this belongs on your backend:** the SDK Key is long-lived and
+  org-wide and must never reach a device. The example does it in-app, clearly marked, only so the flow
+  can be run without a backend to ask — read the file's header, and § 6 of `SDK_INTERFACE.md`,
+  before copying any of it.
+- **`Creds.kt`** — the typed SDK Key + user id, saved so you don't retype them each run. Your app
+  stores neither: it holds no SDK Key at all, and its user id comes from its own user store.
 - **`MainActivity.kt`** — requests the BLE runtime permissions (the host's responsibility).
-- **`ui/`** — the flow: `session`-gated **AuthScreen** (`registerUser` + staging/prod toggle) →
+- **`ui/`** — the flow: `session`-gated **AuthScreen** (exchange → `registerUser`, + staging/prod
+  toggle) →
   **MainScaffold** (connection/battery indicator + Dashboard / Insights / Profile), and a
   **PairDeviceScreen** that renders `pairingState`.
 
@@ -25,7 +35,7 @@ The pieces that matter:
 | Area | SDK API |
 |------|---------|
 | Init | `SensorBioSDK.initialize`, `environment`, `logHandler`, `version` |
-| Auth | `sdkKeyCredentials`, `registerUser`, `signOut`, observe `session` / `userProfileFlow` |
+| Auth | `sdkKeyCredentials`, `sdkTokenProvider`, `registerUser(userId, sdkToken)`, `signOut`, observe `session` / `userProfileFlow` |
 | Pairing | `beginPairing`, `selectDevice`, `endPairing`, observe `pairingState` |
 | Device | observe `connected` / `batteryLevel` / `charging` / `haveDevice` / `pairedDevice` / `serialNumber`; `userLED`, `reset`, `removeDeviceFromPairedDevices` |
 | Reads | `fetchGoals`, `fetchDailyHR`/`fetchRangeHR` (and the HRV / RR / recovery / steps / calories / sleep / activity equivalents), `fetchPopulationInsights` |
@@ -33,12 +43,22 @@ The pieces that matter:
 
 ### Registration
 
-`registerUser` is the SDK's registration path: set `SensorBioSDK.sdkKeyCredentials` once with your org
-id + SDK key, then call `registerUser(userId = …)` with **your own** stable identifier for a user your
-app has already authenticated (your login, SSO, OAuth — the SDK doesn't care which). It is
+Two steps. **Your backend** exchanges your organization SDK Key for a single-use `sdk_token`
+(`POST /sdk/v1/token` — see § 6 of `SDK_INTERFACE.md`), and your app registers with that token:
+`registerUser(userId = …, sdkToken = …)`, where `userId` is **your own** stable identifier for a user
+your app has already authenticated (your login, SSO, OAuth — the SDK doesn't care which). It is
 **register-or-login**: the first call for a given `userId` registers, later calls sign the same user
 back in. There is no email/password path in the SDK — your users have no Sensor Bio credentials to
 supply.
+
+Better still, set `SensorBioSDK.sdkTokenProvider = { myBackend.mintSdkToken() }` once at launch and
+drop the `sdkToken` argument. The SDK then asks for a token when it needs one — the first register,
+and again if a session ever dies past refreshing — and rebuilds the session itself instead of forcing
+your app to write re-authentication at every call site.
+
+The example app has no backend, so it mints the token in-process from a key you type in. That is a
+stand-in, not a pattern: a shipping app never holds the SDK Key. The register screen says so on
+screen, and `SdkTokenExchange.kt` says so at length.
 
 ### Pairing
 

@@ -6,15 +6,19 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -23,11 +27,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sensorbio.example.Env
+import com.sensorbio.example.SdkTokenExchange
+import com.sensorbio.example.SdkTokenRecord
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import com.sensorbio.sensorbiosdk.SensorBioSDK
 import com.sensorbio.sensorbiosdk.datatypes.SB_Environment
 import com.sensorbio.sensorbiosdk.datatypes.SB_Unit
@@ -50,6 +62,7 @@ fun ProfileScreen(usernameOrEmail: String) {
     var prefilled by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
     var saveMsg by remember { mutableStateOf<String?>(null) }
+    var showingToken by remember { mutableStateOf(false) }
 
     LaunchedEffect(profile) {
         val p = profile ?: return@LaunchedEffect
@@ -81,6 +94,54 @@ fun ProfileScreen(usernameOrEmail: String) {
                 InfoRow("Sex", p?.sex?.name ?: "—")
                 InfoRow("Age", p?.age?.toString() ?: "—")
                 InfoRow("Units", p?.units?.name ?: "—")
+            }
+        }
+
+        // --- What this session was registered with ---
+        //
+        // A demonstration, not a pattern to copy: this app minted the token in-process, so it can
+        // show exactly what went on the wire. A real app receives a token from its backend, hands it
+        // to registerUser, and forgets it.
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Registered with", style = MaterialTheme.typography.titleMedium)
+                val token = SdkTokenRecord.token
+                if (token == null) {
+                    Text(
+                        "Session restored — no register this launch.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "A relaunch does not re-register: the SDK restored the access/refresh pair " +
+                            "from its store, so no token was minted and none was needed. A token is " +
+                            "a bootstrap credential, spent by the one register that used it. Sign " +
+                            "out and register to see a fresh one.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Row(
+                        Modifier.fillMaxWidth().clickable { showingToken = true },
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("sdk_token")
+                            Text(
+                                "${token.sdkToken.take(12)}…${token.sdkToken.takeLast(6)}",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Text("View", color = MaterialTheme.colorScheme.primary)
+                    }
+                    Text(
+                        "The single-use token the register call presented, exchanged from your SDK " +
+                            "Key. Tap to see the whole thing.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
 
@@ -161,6 +222,10 @@ fun ProfileScreen(usernameOrEmail: String) {
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Sign out") }
     }
+
+    if (showingToken) {
+        SdkTokenRecord.token?.let { SdkTokenDialog(it) { showingToken = false } }
+    }
 }
 
 @Composable
@@ -182,6 +247,62 @@ private fun NumField(
         modifier = modifier,
     )
 }
+
+/**
+ * The full `sdk_token` the register presented, plus the rest of what the exchange returned. Shown
+ * because this app minted it in-process; a real app has no reason to surface one.
+ */
+@Composable
+private fun SdkTokenDialog(token: SdkTokenExchange.MintedToken, onDismiss: () -> Unit) {
+    val clipboard = LocalClipboardManager.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("SDK token") },
+        text = {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                SelectionContainer {
+                    Text(
+                        token.sdkToken,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                }
+                Text(
+                    "Spent. A token is good for exactly one register-or-login, and Sensor Bio keeps " +
+                        "only its SHA-256 hash plus the ${token.sdkToken.take(9)}… prefix — which is " +
+                        "the half you quote in a bug report.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                InfoRow("organization_id", token.organizationId)
+                InfoRow("sdk_key_id", token.sdkKeyId.ifBlank { "—" })
+                InfoRow("expires_in_seconds", token.expiresInSeconds.toString())
+                SdkTokenRecord.mintedAtMillis?.let {
+                    InfoRow("minted", TIME_FORMAT.format(Date(it)))
+                    InfoRow("expires", TIME_FORMAT.format(Date(it + token.expiresInSeconds * 1000L)))
+                }
+                Text(
+                    "organization_id and sdk_token are the only two fields your backend has to " +
+                        "return to your app. sdk_key_id names the SDK Key this token was anchored " +
+                        "to — revoking that key signs out every session minted under it.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+        dismissButton = {
+            TextButton(onClick = { clipboard.setText(AnnotatedString(token.sdkToken)) }) {
+                Text("Copy token")
+            }
+        },
+    )
+}
+
+private val TIME_FORMAT = SimpleDateFormat("HH:mm:ss", Locale.US)
 
 @Composable
 private fun InfoRow(label: String, value: String) {
