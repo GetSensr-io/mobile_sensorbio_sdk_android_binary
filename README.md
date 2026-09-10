@@ -77,16 +77,16 @@ SensorBioSDK.environment = SB_Environment.PRODUCTION
 //    and returns the organization_id + the single-use sdk_token.
 val minted = yourBackend.mintSensorBioToken()
 
-// 2. Hand them to the SDK.
-SensorBioSDK.sdkKeyCredentials = SB_SDKKeyCredentials(
-    org_id = minted.organizationId,
-    sdk_token = minted.sdkToken,
+// 2. Hand both to the SDK.
+SensorBioSDK.sdkCredentials = SB_SDKCredentials(
+    organizationId = minted.organizationId,
+    sdkToken = minted.sdkToken,
 )
 
 // 3. Register or log in. The first call for a given userId registers;
 //    later calls log the same user back in. There is no email/password
 //    sign-in on the customer surface.
-val outcome = SensorBioSDK.registerUser(userId = yourUserId, sdkToken = minted.sdkToken)
+val outcome = SensorBioSDK.registerUser(userId = yourUserId)
 
 // Observe device + read metrics
 SensorBioSDK.connected.collect { isConnected -> /* … */ }
@@ -96,15 +96,9 @@ val dashboard = SensorBioSDK.fetchDashboardData(date = Instant.now(), tzOffset =
 Get a fresh token for every registration and never cache one — a spent token
 fails inside `registerUser` as an authentication error, far from its cause.
 
-> **One rough edge here, ours and being fixed.**
->
-> `SB_SDKKeyCredentials.sdk_token` does not currently take the token shown
-> above — it takes your raw organization **SDK Key**, which every
-> authenticated call after registration then presents. That defeats the point
-> of the exchange, and it is being removed: the session's own access token
-> already identifies your organization. Until then, fetch the key from your
-> backend rather than compiling it into your app.
-
+The SDK Key never reaches the device, and there is nothing else to configure:
+the organization is remembered for you, so an app relaunching into a restored
+session sets nothing.
 
 See **[`SDK_INTERFACE.md`](./SDK_INTERFACE.md)** for the full public surface, and **[`ExampleApp/`](./ExampleApp)**
 for a complete reference integration (token exchange → `registerUser` → pair → dashboard with metric
