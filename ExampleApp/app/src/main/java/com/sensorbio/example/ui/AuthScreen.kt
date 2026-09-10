@@ -11,8 +11,13 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.Row
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -33,7 +38,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.sensorbio.example.Creds
 import com.sensorbio.example.Env
+import com.sensorbio.example.SdkTokenExchange
+import com.sensorbio.example.SdkTokenRecord
 import com.sensorbio.sensorbiosdk.SensorBioSDK
 import com.sensorbio.sensorbiosdk.datatypes.SB_Environment
 import com.sensorbio.sensorbiosdk.datatypes.SB_RegisterUserOutcome
@@ -41,10 +49,13 @@ import com.sensorbio.sensorbiosdk.datatypes.SB_SDKKeyCredentials
 import kotlinx.coroutines.launch
 
 /**
- * SDK-key-only auth surface (SB-1628). This example is a **third-party SDK integration**: users are
- * registered password-lessly via [SensorBioSDK.registerUser], not the first-party email/password
- * sign-in or create-account flows (those were removed). Set [SensorBioSDK.sdkKeyCredentials] once, then
- * call [SensorBioSDK.registerUser] with the org's own `userId`.
+ * SDK-token auth surface. This example is a **third-party SDK integration**: users are registered
+ * password-lessly via [SensorBioSDK.registerUser], not the first-party email/password sign-in or
+ * create-account flows (those were removed).
+ *
+ * Registering is two steps: exchange the organization SDK Key for a single-use `sdk_token`
+ * ([SdkTokenExchange] — the part a real integration puts on its **own backend**), then register with
+ * that token. The exchange also returns `organization_id`, so there is no Org ID to type.
  */
 @Composable
 fun AuthScreen() {
@@ -107,32 +118,57 @@ fun AuthScreen() {
 }
 
 /**
- * SB-1628 SDK-key register-or-login. The host sets [SensorBioSDK.sdkKeyCredentials] once (in-memory,
- * never persisted), then calls [SensorBioSDK.registerUser] with just the org's own `userId` — no email
- * or password. On success the SDK persists the session and publishes `userProfileFlow`, so [AppRoot]
- * routes to the dashboard, and every subsequent authenticated call rides the new `access_token`
- * auth-session protocol. The SDK key is a secret, so it's typed here at runtime rather than baked in.
+ * Exchange, then register. The exchange is what your backend does for you; the SDK Key is typed here
+ * at runtime (and saved, so you don't retype it every run) because this app is standing in for that
+ * backend. On success the SDK persists the session and publishes `userProfileFlow`, so [AppRoot]
+ * routes to the dashboard, and every subsequent authenticated call rides the `access_token`
+ * auth-session protocol.
  */
 @Composable
 private fun SdkRegisterForm() {
     val scope = rememberCoroutineScope()
-    // The host supplies its own org id + secret SDK key at runtime; the SDK never persists them.
-    var orgId by remember { mutableStateOf("") }
-    var sdkKey by remember { mutableStateOf("") }
-    // You choose the user id + activation code on-device.
-    var userId by remember { mutableStateOf("") }
+    val context = LocalContext.current
+    val creds = remember { Creds.from(context) }
+
+    // The SDK Key + your own user id, remembered across launches. The org id is not typed at all —
+    // the exchange resolves it from the key.
+    var sdkKey by remember { mutableStateOf(creds.sdkKey()) }
+    var userId by remember { mutableStateOf(creds.userId()) }
     var activationCode by remember { mutableStateOf("") }
     var submitting by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
+    var minted by remember { mutableStateOf<SdkTokenExchange.MintedToken?>(null) }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(
-            "Register-or-login for a user your app has already authenticated. Set sdkKeyCredentials, " +
-                "then registerUser(userId). No email/password.",
+            "Register-or-login for a user your app has already authenticated. The SDK Key is " +
+                "exchanged for a single-use SDK token, which is what registerUser presents. No " +
+                "email/password.",
             style = MaterialTheme.typography.bodySmall,
         )
-        AuthField(orgId, { orgId = it }, "Org ID")
-        AuthField(sdkKey, { sdkKey = it }, "SDK Token (secret)", isPassword = true)
+
+        // Deliberately a card, not fine print: copying this app's in-app exchange into a real app
+        // ships the organization's SDK Key to every install.
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+            ),
+        ) {
+            Row(
+                Modifier.padding(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(Icons.Filled.Warning, contentDescription = null)
+                Text(
+                    "Dev stand-in — YOUR BACKEND does this exchange. A shipping app never holds " +
+                        "the SDK Key.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+
+        AuthField(sdkKey, { sdkKey = it }, "SDK Key (sbsk_… secret)", isPassword = true)
         AuthField(userId, { userId = it }, "User ID (client_sdk_user_id)")
         AuthField(activationCode, { activationCode = it }, "Activation code (optional)")
 
@@ -140,15 +176,32 @@ private fun SdkRegisterForm() {
             onClick = {
                 submitting = true
                 message = null
+                minted = null
                 scope.launch {
                     try {
-                        // 1) Put the SDK into SDK-key mode (in-memory only).
-                        SensorBioSDK.sdkKeyCredentials =
-                            SB_SDKKeyCredentials(org_id = orgId.trim(), sdk_token = sdkKey.trim())
-                        // 2) Register-or-login the org's user.
+                        creds.save(sdkKey = sdkKey, userId = userId)
+
+                        // 1) What your backend does: exchange the long-lived key for a single-use
+                        //    token. Fresh every submit — a token is spent by the register it
+                        //    succeeds at, and reusing one fails as an opaque auth error.
+                        val token = SdkTokenExchange.mintToken(sdkKey.trim())
+                        minted = token
+                        SdkTokenRecord.record(token)
+                        creds.saveOrgId(token.organizationId)
+
+                        // 2) The org credentials every authenticated call after the register
+                        //    carries. The single-use token goes to registerUser itself, below, and
+                        //    is the only credential that call presents.
+                        SensorBioSDK.sdkKeyCredentials = SB_SDKKeyCredentials(
+                            org_id = token.organizationId,
+                            sdk_token = sdkKey.trim(),
+                        )
+
+                        // 3) Register-or-login the org's user, with the token.
                         val outcome = SensorBioSDK.registerUser(
                             userId = userId.trim(),
                             activationCode = activationCode.trim().ifEmpty { null },
+                            sdkToken = token.sdkToken,
                         )
                         message = when (outcome) {
                             is SB_RegisterUserOutcome.Success ->
@@ -157,16 +210,29 @@ private fun SdkRegisterForm() {
                             else -> outcome::class.simpleName ?: "Unknown outcome"
                         }
                     } catch (t: Throwable) {
-                        message = "Error: ${t.message ?: t::class.simpleName}"
+                        // An exchange failure means no register call was made at all.
+                        message = if (minted == null) {
+                            "Couldn't mint an SDK token — no register call was made. ${t.message ?: t::class.simpleName}"
+                        } else {
+                            "Error: ${t.message ?: t::class.simpleName}"
+                        }
                     } finally {
                         submitting = false
                     }
                 }
             },
-            enabled = orgId.isNotBlank() && sdkKey.isNotBlank() && userId.isNotBlank() && !submitting,
+            enabled = sdkKey.isNotBlank() && userId.isNotBlank() && !submitting,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            if (submitting) CircularProgressIndicator(Modifier.height(20.dp)) else Text("SDK Register / Login")
+            if (submitting) CircularProgressIndicator(Modifier.height(20.dp)) else Text("Exchange token & register")
+        }
+
+        minted?.let { token ->
+            Text(
+                "Org ${token.organizationId}\nToken ${token.sdkToken.take(9)}… (${token.expiresInSeconds}s, single use)",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
         message?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary) }
     }

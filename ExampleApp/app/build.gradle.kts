@@ -45,7 +45,7 @@ configurations.configureEach {
 dependencies {
     // The entire SensorBio integration: one coordinate, resolved from the public Maven repo.
     // It brings the embedded BLE + edge binaries and declares its OSS transitive deps (incl. coroutines).
-    implementation("com.sensorbio:sensorbio-sdk:2.2.0")
+    implementation("com.sensorbio:sensorbio-sdk:2.3.0")
 
     val composeBom = platform("androidx.compose:compose-bom:2024.09.03")
     implementation(composeBom)
@@ -55,5 +55,12 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.activity:activity-compose:1.9.2")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
+
+    // Only for the SDK-token exchange this app performs on your backend's behalf
+    // (`SdkTokenExchange`). The public API requires HTTP/2, which `HttpURLConnection` does not
+    // speak — it answers HTTP 464. Your app needs no HTTP client for the SDK itself; use whatever
+    // you already talk to your own backend with.
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
