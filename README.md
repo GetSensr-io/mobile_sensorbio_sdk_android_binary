@@ -36,11 +36,11 @@ dependencyResolutionManagement {
 
 ```kotlin
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:0.13.0")
+    implementation("com.sensorbio:sensorbio-sdk:2.2.0")
 }
 ```
 
-(Groovy DSL is equivalent: `maven { url '…' }` + `implementation 'com.sensorbio:sensorbio-sdk:0.13.0'`.)
+(Groovy DSL is equivalent: `maven { url '…' }` + `implementation 'com.sensorbio:sensorbio-sdk:2.2.0'`.)
 
 ## What you get
 
@@ -67,17 +67,25 @@ dependencies {
 SensorBioSDK.initialize(this, SB_AppConfig(appType = SB_AppType.SENSR, appFlavor = BuildConfig.FLAVOR))
 SensorBioSDK.environment = SB_Environment.PRODUCTION
 
-// Sign in
-val outcome = SensorBioSDK.signIn(email = email, password = password)
+// Register or log in a user. There is no email/password sign-in on the SDK
+// surface: your own server mints a single-use SDK token, and `registerUser`
+// register-or-logs-in on YOUR identifier for the user. See SDK_INTERFACE.md.
+val outcome = SensorBioSDK.registerUser(userId = yourUserId)
 
 // Observe device + read metrics
 SensorBioSDK.connected.collect { isConnected -> /* … */ }
 val dashboard = SensorBioSDK.fetchDashboardData(date = Instant.now(), tzOffset = tz)
 ```
 
+> **Authentication needs one endpoint on your own server.** It is not shown
+> above because it is more than a line: your server exchanges your
+> organization SDK Key for a single-use token, and your app hands that to the
+> SDK before registering. **[`SDK_INTERFACE.md`](./SDK_INTERFACE.md)** is the
+> guide — read it before wiring auth.
+
 See **[`SDK_INTERFACE.md`](./SDK_INTERFACE.md)** for the full public surface, and **[`ExampleApp/`](./ExampleApp)**
-for a complete reference integration (sign-in / create-account → pair → dashboard with metric detail views,
-insights, profile).
+for a complete reference integration (token exchange → `registerUser` → pair → dashboard with metric
+detail views, insights, profile).
 
 ## Documentation
 
