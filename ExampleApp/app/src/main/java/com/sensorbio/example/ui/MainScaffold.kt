@@ -91,11 +91,13 @@ fun MainScaffold(usernameOrEmail: String) {
                 Tab.DASHBOARD -> DashboardScreen(
                     date = selectedDate,
                     onDateChange = { selectedDate = it },
-                    onPair = { pairing = true },
                     onOpenDetail = { detail = it },
                 )
                 Tab.INSIGHTS -> InsightsScreen()
-                Tab.PROFILE -> ProfileScreen(usernameOrEmail = usernameOrEmail)
+                Tab.PROFILE -> ProfileScreen(
+                    usernameOrEmail = usernameOrEmail,
+                    onPair = { pairing = true },
+                )
             }
         }
     }

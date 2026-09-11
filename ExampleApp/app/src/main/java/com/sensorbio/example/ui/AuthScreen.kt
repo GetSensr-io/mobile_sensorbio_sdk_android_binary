@@ -45,7 +45,7 @@ import com.sensorbio.example.SdkTokenRecord
 import com.sensorbio.sensorbiosdk.SensorBioSDK
 import com.sensorbio.sensorbiosdk.datatypes.SB_Environment
 import com.sensorbio.sensorbiosdk.datatypes.SB_RegisterUserOutcome
-import com.sensorbio.sensorbiosdk.datatypes.SB_SDKKeyCredentials
+import com.sensorbio.sensorbiosdk.datatypes.SB_SDKCredentials
 import kotlinx.coroutines.launch
 
 /**
@@ -189,19 +189,18 @@ private fun SdkRegisterForm() {
                         SdkTokenRecord.record(token)
                         creds.saveOrgId(token.organizationId)
 
-                        // 2) The org credentials every authenticated call after the register
-                        //    carries. The single-use token goes to registerUser itself, below, and
-                        //    is the only credential that call presents.
-                        SensorBioSDK.sdkKeyCredentials = SB_SDKKeyCredentials(
-                            org_id = token.organizationId,
-                            sdk_token = sdkKey.trim(),
+                        // 2) Hand the SDK exactly what the exchange returned. This is the only
+                        //    credential it ever sees; the SDK Key that minted the token stays on
+                        //    the "backend" side of this app's pretence.
+                        SensorBioSDK.sdkCredentials = SB_SDKCredentials(
+                            organizationId = token.organizationId,
+                            sdkToken = token.sdkToken,
                         )
 
-                        // 3) Register-or-login the org's user, with the token.
+                        // 3) Register-or-login the org's user.
                         val outcome = SensorBioSDK.registerUser(
                             userId = userId.trim(),
                             activationCode = activationCode.trim().ifEmpty { null },
-                            sdkToken = token.sdkToken,
                         )
                         message = when (outcome) {
                             is SB_RegisterUserOutcome.Success ->

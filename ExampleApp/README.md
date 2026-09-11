@@ -13,12 +13,15 @@ The pieces that matter:
 - **`AndroidManifest.xml`** — BLE runtime permissions (`BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT`, plus
   `ACCESS_FINE_LOCATION`, which BLE scanning needs at every API level). The SDK's own permissions +
   foreground service merge in.
-- **`ExampleApplication.kt`** — the required init pattern: `SensorBioSDK.initialize(...)` →
-  set `environment` → install `sdkTokenProvider` (so the SDK can ask for a single-use token whenever
-  it needs one) → wire `logHandler`.
+- **`ExampleApplication.kt`** — the required init pattern: `SensorBioSDK.initialize(context)` →
+  set `environment` → wire `logHandler`. Nothing organization-scoped is set here: the credentials
+  are minted per registration, not held for the life of the process.
+- **`ui/AppRoot.kt`** — the session gate, and the one piece most worth copying: it collects
+  `reauthenticationRequired` and tears the session down. The SDK reports that a session is over but
+  never ends one itself — only your backend can mint the token that would rebuild it — so an app
+  that ignores this sits on an authenticated screen where every call fails.
 - **`SdkTokenExchange.kt`** — the `POST /sdk/v1/token` exchange that turns an organization SDK Key
-  into a single-use `sdk_token`, plus the `sdkTokenProvider` lambda the SDK pulls when a session needs
-  rebuilding. **In a real integration this belongs on your backend:** the SDK Key is long-lived and
+  into a single-use `sdk_token`. **In a real integration this belongs on your backend:** the SDK Key is long-lived and
   org-wide and must never reach a device. The example does it in-app, clearly marked, only so the flow
   can be run without a backend to ask — read the file's header, and § 6 of `SDK_INTERFACE.md`,
   before copying any of it.
@@ -35,7 +38,7 @@ The pieces that matter:
 | Area | SDK API |
 |------|---------|
 | Init | `SensorBioSDK.initialize`, `environment`, `logHandler`, `version` |
-| Auth | `sdkKeyCredentials`, `sdkTokenProvider`, `registerUser(userId, sdkToken)`, `signOut`, observe `session` / `userProfileFlow` |
+| Auth | `sdkCredentials` (`SB_SDKCredentials`), `registerUser(userId)`, `signOut`, observe `session` / `userProfileFlow` / `reauthenticationRequired` |
 | Pairing | `beginPairing`, `selectDevice`, `endPairing`, observe `pairingState` |
 | Device | observe `connected` / `batteryLevel` / `charging` / `haveDevice` / `pairedDevice` / `serialNumber`; `userLED`, `reset`, `removeDeviceFromPairedDevices` |
 | Reads | `fetchGoals`, `fetchDailyHR`/`fetchRangeHR` (and the HRV / RR / recovery / steps / calories / sleep / activity equivalents), `fetchPopulationInsights` |
@@ -44,17 +47,17 @@ The pieces that matter:
 ### Registration
 
 Two steps. **Your backend** exchanges your organization SDK Key for a single-use `sdk_token`
-(`POST /sdk/v1/token` — see § 6 of `SDK_INTERFACE.md`), and your app registers with that token:
-`registerUser(userId = …, sdkToken = …)`, where `userId` is **your own** stable identifier for a user
+(`POST /sdk/v1/token` — see § 6 of `SDK_INTERFACE.md`), and your app sets it as
+`SensorBioSDK.sdkCredentials = SB_SDKCredentials(organizationId = …, sdkToken = …)` and calls
+`registerUser(userId = …)`, where `userId` is **your own** stable identifier for a user
 your app has already authenticated (your login, SSO, OAuth — the SDK doesn't care which). It is
 **register-or-login**: the first call for a given `userId` registers, later calls sign the same user
 back in. There is no email/password path in the SDK — your users have no Sensor Bio credentials to
 supply.
 
-Better still, set `SensorBioSDK.sdkTokenProvider = { myBackend.mintSdkToken() }` once at launch and
-drop the `sdkToken` argument. The SDK then asks for a token when it needs one — the first register,
-and again if a session ever dies past refreshing — and rebuilds the session itself instead of forcing
-your app to write re-authentication at every call site.
+The token is single-use and `registerUser` spends it, so mint a fresh one per registration and never
+cache one. After that first call the session's own access/refresh tokens carry every request — your
+SDK Key is never on the device, and no organization credential rides on any later call.
 
 The example app has no backend, so it mints the token in-process from a key you type in. That is a
 stand-in, not a pattern: a shipping app never holds the SDK Key. The register screen says so on

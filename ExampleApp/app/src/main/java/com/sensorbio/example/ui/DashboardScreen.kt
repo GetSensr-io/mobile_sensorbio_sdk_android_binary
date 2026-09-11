@@ -11,14 +11,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -30,18 +28,18 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sensorbio.sensorbiosdk.SensorBioSDK
 import com.sensorbio.sensorbiosdk.datatypes.SB_Goals
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import java.time.Instant
 
-// Activity / Recovery / Sleep scores first, then the biometric + activity-count metrics.
-private val DASHBOARD_ORDER = listOf(
-    MetricKind.ACTIVITY, MetricKind.RECOVERY, MetricKind.SLEEP,
+// Two groups, matching the iOS sample: the three daily scores, then the
+// underlying biometrics. The device is not here at all — it is an account
+// concern and lives on Profile with pairing.
+private val SUMMARY_ORDER = listOf(MetricKind.ACTIVITY, MetricKind.RECOVERY, MetricKind.SLEEP)
+private val METRIC_ORDER = listOf(
     MetricKind.HEART_RATE, MetricKind.HRV, MetricKind.RESPIRATORY_RATE,
     MetricKind.STEPS, MetricKind.CALORIES,
 )
@@ -51,15 +49,9 @@ private val DASHBOARD_ORDER = listOf(
 fun DashboardScreen(
     date: Instant,
     onDateChange: (Instant) -> Unit,
-    onPair: () -> Unit,
     onOpenDetail: (MetricKind) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
-    val haveDevice by SensorBioSDK.haveDevice.collectAsStateWithLifecycle()
-    val connected by SensorBioSDK.connected.collectAsStateWithLifecycle()
-    val charging by SensorBioSDK.charging.collectAsStateWithLifecycle()
-    val battery by SensorBioSDK.batteryLevel.collectAsStateWithLifecycle()
-    val serial by SensorBioSDK.serialNumber.collectAsStateWithLifecycle()
 
     var goals by remember { mutableStateOf<SB_Goals?>(null) }
     val headlines = remember { mutableStateMapOf<MetricKind, String>() }
@@ -68,7 +60,7 @@ fun DashboardScreen(
     suspend fun load() {
         coroutineScope {
             launch { goals = runCatching { SensorBioSDK.fetchGoals() }.getOrNull() }
-            DASHBOARD_ORDER.forEach { kind ->
+            (SUMMARY_ORDER + METRIC_ORDER).forEach { kind ->
                 launch { headlines[kind] = runCatching { loadMetric(kind, date, Grain.DAY).headline }.getOrDefault("—") }
             }
         }
@@ -83,80 +75,80 @@ fun DashboardScreen(
     ) {
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             DateBar(date = date, onDateChange = onDateChange)
 
-            // --- Device card ---
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    val deviceTitle = if (haveDevice && !serial.isNullOrBlank()) "Device — '$serial'" else "Device"
-                    Text(deviceTitle, style = MaterialTheme.typography.titleMedium)
-                    if (haveDevice) {
-                        Text("Connection: ${if (connected) "Connected" else "Offline"}")
-                        Text("Battery: ${battery?.let { "$it%" } ?: "—"}")
-                        Text("Charging: ${if (charging) "Yes" else "No"}")
+            SectionHeader("Summary")
+            MetricList(SUMMARY_ORDER, headlines, goals, onOpenDetail)
 
-                        // Device commands. Blink/reset go over BLE, so they need an active connection.
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(
-                                enabled = connected,
-                                onClick = { scope.launch { runCatching { SensorBioSDK.userLED(blue = true, blink = true, seconds = 5) } } },
-                            ) { Text("Blink LED") }
-                            OutlinedButton(enabled = connected, onClick = { SensorBioSDK.reset() }) { Text("Reset") }
-                        }
-                        TextButton(
-                            onClick = { SensorBioSDK.pairedDevice.value?.macAddress?.let { SensorBioSDK.removeDeviceFromPairedDevices(it) } },
-                        ) { Text("Unpair", color = MaterialTheme.colorScheme.error) }
-                    } else {
-                        Text("No device paired.")
-                        Button(onClick = onPair) { Text("Pair a device") }
-                    }
-                }
-            }
-
-            // --- Metric score cards (tap for detail / D-W-M-Y / data points) ---
-            Text("Metrics", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 4.dp))
-            DASHBOARD_ORDER.forEach { kind ->
-                val goalSuffix = when (kind) {
-                    MetricKind.STEPS -> goals?.let { "/ ${it.targetSteps}" }
-                    MetricKind.CALORIES -> goals?.let { "/ ${it.targetCalories}" }
-                    else -> null
-                }
-                MetricScoreCard(
-                    title = kind.title,
-                    value = headlines[kind] ?: "…",
-                    goalSuffix = goalSuffix,
-                    onClick = { onOpenDetail(kind) },
-                )
-            }
+            SectionHeader("Metrics")
+            MetricList(METRIC_ORDER, headlines, goals, onOpenDetail)
         }
     }
 }
 
 @Composable
-private fun MetricScoreCard(title: String, value: String, goalSuffix: String?, onClick: () -> Unit) {
-    Card(Modifier.fillMaxWidth().clickable(onClick = onClick)) {
-        Row(
-            Modifier.fillMaxWidth().padding(16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column {
-                Text(title, style = MaterialTheme.typography.titleSmall)
-                Row(verticalAlignment = Alignment.Bottom) {
-                    Text(value, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-                    goalSuffix?.let {
-                        Text(
-                            "  $it",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(bottom = 2.dp),
-                        )
-                    }
+private fun SectionHeader(title: String) {
+    Text(
+        title,
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(start = 4.dp, top = 8.dp),
+    )
+}
+
+/** One grouped block of single-line rows — the Compose analogue of a `List` `Section` on iOS. */
+@Composable
+private fun MetricList(
+    kinds: List<MetricKind>,
+    headlines: Map<MetricKind, String>,
+    goals: SB_Goals?,
+    onOpenDetail: (MetricKind) -> Unit,
+) {
+    Card(Modifier.fillMaxWidth()) {
+        Column {
+            kinds.forEachIndexed { index, kind ->
+                val goalSuffix = when (kind) {
+                    MetricKind.STEPS -> goals?.let { " / ${it.targetSteps}" }
+                    MetricKind.CALORIES -> goals?.let { " / ${it.targetCalories}" }
+                    else -> null
                 }
+                MetricRow(
+                    title = kind.title,
+                    value = (headlines[kind] ?: "…") + (goalSuffix ?: ""),
+                    onClick = { onOpenDetail(kind) },
+                )
+                if (index < kinds.lastIndex) HorizontalDivider()
             }
-            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null)
+        }
+    }
+}
+
+/** Label left, value right, chevron — `LabeledContent` inside a `NavigationLink` on iOS. */
+@Composable
+private fun MetricRow(title: String, value: String, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(title, style = MaterialTheme.typography.bodyLarge)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                value,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 4.dp),
+            )
         }
     }
 }

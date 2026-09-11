@@ -79,7 +79,7 @@ the host's to obtain. See `ExampleApp/`'s `MainActivity`/`PairDeviceScreen` for 
 ### 2.1 Startup — one entry point
 
 ```kotlin
-SensorBioSDK.initialize(context, SB_AppConfig(appType = …, appFlavor = …))   // once, top of Application.onCreate
+SensorBioSDK.initialize(context)                                             // once, top of Application.onCreate
 ```
 
 `initialize` stands up the encrypted `sdk_prefs` store, runs the one-time legacy-prefs migrator (no
@@ -93,15 +93,10 @@ Plain `var`s the host sets once after `initialize`:
 | Property | Type | Controls |
 |---|---|---|
 | `environment` | `SB_Environment` | gRPC target (dev/prod); runtime-switchable |
-| `sdkKeyCredentials` | `SB_SDKKeyCredentials?` | org credentials for SDK-key mode (non-null ⇒ SDK-key auth); in-memory only, never persisted. Set once at launch before `registerUser` — see §5.1 |
-| `sdkTokenProvider` | `SB_SDKTokenProvider?` | how the SDK asks **you** for a single-use `sdk_token` (`suspend () -> String`). Set once at launch; the SDK stores the lambda, never a token — see §5.1 |
+| `sdkCredentials` | `SB_SDKCredentials?` | the organization id + single-use `sdk_token` your backend's exchange returned. Set immediately before `registerUser` — see §5.1 |
 | `logHandler` | `((SB_LogLevel, String?, Array<out Any?>) -> Unit)?` | sink for SDK logs (unset = silent) |
 
-App identity is set-once config passed into `initialize(context, SB_AppConfig(...))` — `appType`,
-`appFlavor`, `appDisplayName`, `enableCrashlytics`. App **version + build** are self-read from the host
-`PackageManager` at init. `SB_AppConfig.firmware` (`SB_FirmwareConfig`: S3 bucket + Cognito pool) is the
-optional firmware-fetch config consumed by `getFirmware` — set on first-party `internal` builds only,
-null (and ignored) in customer builds.
+App identity is set-once config passed into `initialize(context)`; every field of `SB_AppConfig` is defaulted, so a customer passes nothing but the context. `SB_AppType`/`appFlavor` are gone (SB-2095) — every value was a Sensr-Bio brand, so a third-party integration had no correct one to pass, and it had no effect on one either. App version + build are self-read from the `PackageManager` at init. `SB_FirmwareConfig` (S3 bucket + Cognito pool) is supplied out-of-band via the internal-only `configureFirmware`, not here.
 
 ---
 
@@ -193,9 +188,9 @@ event streams, recording control, device & BLE control (§3.4), and the flat ser
 | `deviceFullyConfigured` | `Unit` | the device finished full configuration and is usable (rising edge of `isFullyConfigured`) |
 | `deviceDisconnected` | `String` | the device disconnected; payload = macAddress |
 | `hrSyncFinishedForActivity` | `Unit` | a recorded activity's HR/data finished syncing+uploading |
-| `signOutComplete` | `Unit` | involuntary sign-out finished (terminal refresh-token failure); host runs teardown + routes to login |
+| `signOutComplete` | `Unit` | **deprecated, never emitted** — the SDK no longer signs out on its own; collect `reauthenticationRequired` instead |
 | `subscriptionLost` | `Unit` | the server rejected an authenticated call for no active device subscription; host signs the user out + explains why (see §3.2.1) |
-| `reauthenticationRequired` | `Unit` | the SDK holds no usable credential for an authenticated call; host routes to sign-in (see §3.2.2) |
+| `reauthenticationRequired` | `Unit` | the session is over — no usable credential, or the server rejected the one there was; host ends the session and routes to sign-in (see §3.2.2) |
 
 #### 3.2.1 `subscriptionLost` and the subscription block
 
@@ -265,18 +260,32 @@ Hosts should refresh an on-screen report in place when the server entry lands ra
 
 > **The movement penalty is always 0**, in the SDK and on the server both. The server variable feeding it is declared and never assigned, so the penalty has never contributed to any meditation it has scored. The SDK matches what the server *does*, not what it appears to intend — "fixing" it locally would make every local score read low.
 
-#### 3.2.2 `reauthenticationRequired` — no credential to send
+#### 3.2.2 `reauthenticationRequired` — the session is over
 
-Emitted when the SDK is asked to make an **authenticated** call while holding no usable credential.
-The host should route the user to sign-in.
+Emitted when an **authenticated** call cannot succeed for a credential reason that no retry will
+fix: either the SDK holds no usable credential, or it held one and the server rejected it with the
+single-flight refresh unable to replace it.
+
+**The SDK does not sign the user out — you do.** It can tell that a session is dead; it cannot
+get a new one. Rebuilding an SDK session needs a freshly minted single-use `sdk_token`, which only
+your backend can produce (§5.1), so ending the session is your decision. Tearing down local state —
+the paired band included — is not the SDK's to make on your behalf. This matches iOS, which
+surfaces `SB_AuthError.refreshTokenExpired` for the same reason.
+
+**Handle it.** Ignore it and your app stays on an authenticated screen where every call fails and
+the user has no way back. A minimal handler is `signOut()` + `clearPrefsOnLogout()`, then route to
+your own sign-in; see `ExampleApp`'s `AppRoot`.
+
+It is a one-shot per episode: a dead session 401s every in-flight call at once, and they collapse
+into a single emission. The next call that gets a response re-arms it.
 
 Distinct from its neighbours, and the distinction is the point:
 
 | signal | what happened | who rejected |
 | -- | -- | -- |
 | `subscriptionLost` | live session, no active subscription | server |
-| `signOutComplete` | refresh token rejected; SDK signed the user out | server |
-| `reauthenticationRequired` | no credential existed to send | the SDK, before the wire |
+| `reauthenticationRequired` | no credential to send, or the credential was rejected past recovery | the SDK before the wire, or the server |
+| `signOutComplete` | *deprecated* — fired when the SDK signed the user out itself; it no longer does | — |
 
 The SDK now refuses to dispatch such a call rather than sending it with no auth header. The
 server's authentication gatekeeper rejects a request carrying neither `auth` nor `access_token`
@@ -463,7 +472,7 @@ through the observable event streams (§3.2) — the host **observes**, it does 
   (it fires on both the detailed drain and the nothing-to-fetch short-circuit, so either way the band
   was reached). Removed in favour of this: a `syncNotificationActions` stream of explicit
   SCHEDULE/CANCEL requests, which armed off *connection* events rather than off a sync.
-- **Involuntary sign-out** — observe `signOutComplete`, run teardown, and route to login.
+- **A session that ended without the user asking** — observe `reauthenticationRequired`, run teardown, and route to login (§3.2.2). (`signOutComplete` was the old signal and is no longer emitted.)
 - **Lapsed device subscription** — observe `subscriptionLost`, sign out, and explain why (§3.2.1).
 - **Analytics** — observe `analyticsEvents` and forward them to your backend.
 
@@ -501,7 +510,7 @@ Called directly on `SensorBioSDK.<method>(…)`. One-shot reads are `suspend fun
 | Agreements | `shouldRequestAgreement`, `acceptAgreements(tosVersion, healthDataVersion)`, `acceptCurrentAgreements` *(suspend)* |
 | Account | `updateUserProfile(SB_UserProfileUpdate)`, `changePassword(currentPassword, newPassword)`, `requestPasswordReset`, `checkEmailAvailability`, `validateAccountRequirements(SB_ValidateAccountRequirementsRequest) -> SB_ValidateAccountRequirementsResult`, `refreshUser`, `hydrateSession`, `generateTemporaryAuthToken() -> String?`, `registerApp(deviceId)` |
 | Recording submit | `createActivitySession(activityName, startEpochMs, durationSecs)` *(suspend; manual after-the-fact log)* |
-| Session | `registerUser(userId, email?, sex?, birthdayYear?, birthdayMonth?, birthdayDay?, heightCm?, weightKg?, imperialUnits, activationCode?, sdkToken?) -> SB_RegisterUserOutcome` *(SDK-key register-or-login; org creds come from `sdkKeyCredentials` — see §5.1; this is the SDK's **only** registration path)*, `signOut()`, `persistUser`, `deleteAccount`, `clearSession`, `clearPrefsOnLogout` *(signed-in identity is observable — see §3.1 `session`/`userProfileFlow`)* |
+| Session | `registerUser(userId, email?, sex?, birthdayYear?, birthdayMonth?, birthdayDay?, heightCm?, weightKg?, imperialUnits, activationCode?) -> SB_RegisterUserOutcome` *(SDK-key register-or-login; org creds come from `sdkCredentials` — see §5.1; this is the SDK's **only** registration path)*, `signOut()`, `persistUser`, `deleteAccount`, `clearSession`, `clearPrefsOnLogout` *(signed-in identity is observable — see §3.1 `session`/`userProfileFlow`)* |
 
 | Server writes | `reprocessSleep` *(suspend; user-tapped, throws on failure)*, `updateUserDeviceInfo`, `uploadUserPhoto` *(→ URL)*, `deleteUserPhoto` |
 
@@ -556,19 +565,14 @@ every user currently signed in through it, on every device, as well as preventin
 > stand-in everywhere, because it holds an SDK Key on a device, which is the one thing the exchange
 > exists to prevent.
 
-- **`sdkKeyCredentials`** — set `SensorBioSDK.sdkKeyCredentials = SB_SDKKeyCredentials(org_id, sdk_token)`
-  **once at launch** (like `environment`), where `org_id` is the `organization_id` the exchange
-  returned. A non-null value puts the SDK in **SDK-key mode**; it is held in memory only and never
-  persisted. `registerUser` reads it — it does not take `org_id` as a parameter (iOS parity) — and
-  fails if `sdkKeyCredentials` is unset.
-  > The `sdk_token` **field** on `SB_SDKKeyCredentials` predates the token exchange and still carries
-  > your **organization SDK Key**, not the single-use token: it is what the authenticated RPCs *after*
-  > a register present. The single-use token goes to the `sdkToken` **parameter** below and nowhere
-  > else. The field will be renamed when the authenticated path stops needing a key.
-- **`sdkToken`** *(optional, strongly preferred)* — the single-use `sdk_token` your backend just
-  minted. When supplied it is the credential this call presents, so your long-lived SDK Key never
-  reaches the register RPC. Omit it and the SDK asks `sdkTokenProvider`; with neither, the call falls
-  back to presenting the SDK Key itself, which is **deprecated** and can be refused per environment.
+- **`sdkCredentials`** — set
+  `SensorBioSDK.sdkCredentials = SB_SDKCredentials(organizationId = …, sdkToken = …)`
+  **immediately before each `registerUser`**, from the exchange response: `organizationId` is the
+  `organization_id` it returned, `sdkToken` the single-use `sbst_…` token. It is held in memory
+  only, never persisted, and `registerUser` spends the token and clears it. `registerUser` reads
+  this — it takes neither the org id nor the token as a parameter (iOS parity) — and fails with
+  `FAILED_PRECONDITION` if `sdkCredentials` is unset. Your long-lived SDK Key (`sbsk_…`) never
+  goes here and never reaches the device.
 - **`userId`** — your own stable identifier for the end-user (`client_sdk_user_id`). The first call for
   a given `userId` registers; subsequent calls log in. It is also recorded as the user's **username**
   (visible in the web dashboard).
@@ -587,13 +591,11 @@ Every failure resolves to a typed `SB_RegisterUserOutcome` — it does not throw
 `PERMISSION_DENIED` for an inactive SDK key), and no raw gRPC message string ever crosses the boundary.
 
 ```kotlin
-// Set once at launch (in-memory, never persisted). `orgId` is the organization_id your backend
-// returned alongside the token; `orgSdkKey` is your SDK Key — see the field note above.
-SensorBioSDK.sdkKeyCredentials = SB_SDKKeyCredentials(org_id = orgId, sdk_token = orgSdkKey)
+// Set immediately before registering, from your backend's token exchange. The token is single use
+// and this call spends it; the organization id is remembered across launches.
+SensorBioSDK.sdkCredentials = SB_SDKCredentials(organizationId = orgId, sdkToken = sdkToken)
 
-// `sdkToken` is a fresh single-use token from your backend, used by this one call only. With
-// `sdkTokenProvider` set you can drop the argument entirely.
-when (val outcome = SensorBioSDK.registerUser(userId = userId, sdkToken = sdkToken)) {
+when (val outcome = SensorBioSDK.registerUser(userId = userId)) {
     is SB_RegisterUserOutcome.Success               -> routeToHome(outcome.session)
     SB_RegisterUserOutcome.ClientSdkUserIdAlreadyInUse -> showError("This user id is already in use.")
     SB_RegisterUserOutcome.DeviceSubscriptionRequired,
@@ -603,40 +605,20 @@ when (val outcome = SensorBioSDK.registerUser(userId = userId, sdkToken = sdkTok
 }
 ```
 
-#### Let the SDK ask you for tokens instead (`sdkTokenProvider`)
+#### When a session ends
 
-Passing `sdkToken` per call means handling re-authentication yourself at every call site. The
-alternative is to give the SDK a way to *ask*:
+If a session dies beyond recovery — refresh token past its 60-day inactivity window, revoked, or the
+SDK Key it was signed under revoked — the SDK signs out and surfaces the failure. Treat it like any
+other sign-out: mint fresh credentials, set `SensorBioSDK.sdkCredentials`, and call `registerUser`
+again with the same `userId`. Because `registerUser` is register-**or**-login on
+`client_sdk_user_id`, that returns the same user to the same data.
 
-```kotlin
-// once, next to SensorBioSDK.environment
-SensorBioSDK.sdkTokenProvider = { myBackend.mintSdkToken() }
+The SDK deliberately does not do this for you. Rebuilding a session needs a freshly minted
+single-use token; the SDK cannot mint one, and an earlier version that kept a host lambda around to
+mint from is exactly what required your SDK Key to be on the device (SB-2095).
 
-// then this is the whole flow, for the life of the integration
-SensorBioSDK.registerUser(userId = user.id)
-```
-
-The SDK calls the provider in exactly two situations, and holds nothing in between — it stores your
-lambda, never a token:
-
-1. **`registerUser` with no `sdkToken`.** The provider supplies it.
-2. **A live session died beyond recovery** — refresh token past its 60-day inactivity window, revoked,
-   or the SDK Key it was signed under was revoked. The SDK mints a fresh token, logs the same
-   `client_sdk_user_id` back in, and replays the authenticated call that hit the wall. Your app sees a
-   successful call instead of a forced sign-out.
-
-Concurrent needs are single-flighted into one call (a dead session fails every in-flight RPC at once;
-they share one mint). **Throw to refuse** — a host whose own user is no longer authenticated should not
-mint a token, and the refusal leaves the call failing exactly as it would have. That decision being
-yours is why this is a lambda and not a credential: the SDK cannot mint a token itself, and must not be
-able to.
-
-For (2) the SDK remembers your `client_sdk_user_id` in its own store, so it can name the user to log
-back in. It is an identifier, not a credential — worthless without a freshly minted token — and
-`signOut()` erases it, so a deliberate sign-out is never undone by a re-establish.
-
-Leave `sdkTokenProvider` null and nothing changes: pass `sdkToken` per call and handle the sign-out
-yourself.
+The SDK does remember your `client_sdk_user_id` so you can name the user on the way back in. It is
+an identifier, not a credential — worthless without a fresh token — and `signOut()` erases it.
 
 **What is transparent to your app, and what is not:**
 
@@ -644,8 +626,7 @@ yourself.
 | --- | --- | --- |
 | Access token expires | SDK refreshes and replays the call | Nothing |
 | Refresh token rotates | SDK | Nothing |
-| Refresh chain dies (60-day inactivity, revoked, SDK Key revoked) | SDK, **if** `sdkTokenProvider` is set | Nothing — one provider call |
-| Same, with no provider (or the provider throws) | You | The SDK signs out; route back to your register screen with a fresh token |
+| Refresh chain dies (60-day inactivity, revoked, SDK Key revoked) | You | The SDK signs out; route back to your register screen with fresh credentials |
 
 ```kotlin
 sealed class SB_RegisterUserOutcome {
@@ -1151,10 +1132,11 @@ the gate would send it with no workout to attribute it to and cost the activity 
 `activityName` decides whether steps and distance belong on the report, so prefer a name from your
 activity catalogue over free text.
 
-> Detection is a device-side behaviour: bookends only arrive when the organisation's sensor
-> configuration has the auto-activity algorithm enabled. Where it isn't, these calls are inert and
-> the flow stays empty.
-
+> Detection is a device-side behaviour: bookends only arrive when the organisation has auto-detect
+> of activities switched on — the active-mode `auto_detect_enabled` setting in the advanced sensor
+> configuration, off unless an administrator turns it on. Where it is off, these calls are inert and
+> the flow stays empty. A change reaches the band on the next connect after the app picks the new
+> configuration up, so expect the first detection to follow a reconnect rather than the save.
 
 ### 5.12 Cached timeline first page (SB-1959)
 
@@ -1361,7 +1343,7 @@ Read it as a worked example of the request, the response, and what the app does 
 ~276 public `SB_*` types the facade returns/accepts. Grouped index:
 
 - **User / auth** — `SB_UserProfile`, `SB_UserDemographics`, `SB_UserAppSettings`, `SB_Session`,
-  `SB_SDKKeyCredentials`, `SB_SDKTokenProvider`,
+  `SB_SDKCredentials`,
   `SB_RegisterUserOutcome` (+`SB_ServiceErrorCode`), `SB_ChangePasswordOutcome`,
   `SB_EmailAvailabilityOutcome`, `SB_UpdateUserProfileOutcome`, `SB_RequestPasswordResetOutcome`,
   `SB_AgreementCheck`, `SB_Gender`, `SB_UserProfileUpdate`,
@@ -1422,7 +1404,7 @@ Read it as a worked example of the request, the response, and what the app does 
 - **Meditation** — `SB_MeditationGraph`, `SB_MeditationScore`(+factors/penalties).
 - **Events / elements** — `SB_NotificationElement`.
 - **Surveys / agreements** — `SB_BriefSurvey`(+Question/Answer/Type), `SB_AgreementType`.
-- **Goals / config** — `SB_Goals`, `SB_AppConfig`, `SB_AppType`, `CacheStrategy`, `SB_ViewGranularity`.
+- **Goals / config** — `SB_Goals`, `SB_AppConfig`, `CacheStrategy`, `SB_ViewGranularity`.
 - **Errors / results** — `SB_InsightError`, `SB_RecordStage`, `SB_UnitType`.
 - **Top-level config** — `SB_Environment` (DEVELOPMENT/PRODUCTION), `SB_LogLevel` (V/D/I/W/E),
   `SB_NetworkStatus` (UNREACHABLE/WIFI/CELLULAR/OTHER).
@@ -1441,19 +1423,22 @@ Read it as a worked example of the request, the response, and what the app does 
 
 ```kotlin
 // Application.onCreate
-SensorBioSDK.initialize(this, SB_AppConfig(appType = SB_AppType.SENSR, appFlavor = BuildConfig.FLAVOR))
+SensorBioSDK.initialize(this)
 SensorBioSDK.environment = SB_Environment.PRODUCTION
 SensorBioSDK.logHandler = { level, msg, args -> Log.println(level.toAndroid(), "SDK", msg ?: "") }
 
-// Involuntary sign-out is now an event, not a supplied callback (§4):
-SensorBioSDK.signOutComplete.onEach { logoutAndShowLogin() }.launchIn(appScope)
+// A session that ended without the user asking is an event, not a supplied callback (§3.2.2).
+// The SDK reports it; ending the session is yours to do:
+SensorBioSDK.reauthenticationRequired.onEach { logoutAndShowLogin() }.launchIn(appScope)
 
 // Register-or-login a user your app has already authenticated by its own means. Your backend mints
-// a single-use sdk_token (see § 6); give the SDK a way to ask for one and it
-// handles the first register and any later re-auth. The first call for a given userId registers,
-// later calls sign the same user back in.
-SensorBioSDK.sdkTokenProvider = { myBackend.mintSdkToken() }
-SensorBioSDK.sdkKeyCredentials = SB_SDKKeyCredentials(org_id = ORG_ID, sdk_token = ORG_SDK_KEY)
+// a single-use sdk_token (see § 6) and hands it to the app; set it immediately before registering.
+// The first call for a given userId registers, later calls sign the same user back in.
+val creds = myBackend.mintSdkToken()   // your exchange: returns organization_id + sdk_token
+SensorBioSDK.sdkCredentials = SB_SDKCredentials(
+    organizationId = creds.organizationId,
+    sdkToken = creds.sdkToken,
+)
 when (val outcome = SensorBioSDK.registerUser(userId = myUserId)) {
     is SB_RegisterUserOutcome.Success -> onSignedIn(outcome.session)
     is SB_RegisterUserOutcome.Failed  -> showError(outcome.code)

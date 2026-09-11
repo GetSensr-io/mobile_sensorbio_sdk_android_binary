@@ -5,7 +5,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.sensorbio.sensorbiosdk.SensorBioSDK
 import com.sensorbio.sensorbiosdk.datatypes.SB_Environment
-import com.sensorbio.sensorbiosdk.datatypes.SB_SDKTokenProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -35,7 +34,7 @@ import java.util.concurrent.TimeUnit
  *  2. `POST /sdk/v1/token` with `Authorization: SDKKey sbsk_…`;
  *  3. return `sdk_token` + `organization_id` to the app.
  *
- * The app then hands both to the SDK (`registerUser(userId, sdkToken)`), or installs
+ * The app then hands both to the SDK as `SensorBioSDK.sdkCredentials`, or installs
  * [makeProvider] so the SDK can ask for a token whenever it needs one. Steps 2 and 3 are what this
  * file fakes, so the example app can demonstrate the token flow end to end without a backend.
  *
@@ -126,28 +125,6 @@ object SdkTokenExchange {
         }
     }
 
-    /**
-     * The [SensorBioSDK.sdkTokenProvider] lambda this app installs at launch — the hook the SDK pulls
-     * when it needs a token and none was handed to it: a `registerUser` called without one, or a
-     * session that died and has to be rebuilt (a refresh token past its 60-day window, a revoked SDK
-     * Key).
-     *
-     * In your app this lambda calls **your backend**. Here it re-reads the key the register form saved
-     * and mints locally, which is the same stand-in the rest of this file is. It throws when no key
-     * has been entered — the SDK treats a throw as the host declining to mint and surfaces the auth
-     * error it already had, which is the right outcome: there is nobody to ask.
-     */
-    fun makeProvider(creds: Creds): SB_SDKTokenProvider = {
-        val key = creds.sdkKey()
-        if (key.isBlank()) {
-            throw IOException("no SDK Key saved on this device — register once first")
-        }
-        val minted = mintToken(key)
-        // Surface it on the Profile screen like any other mint, so a session the SDK rebuilt on its
-        // own is visible rather than mysterious.
-        withContext(Dispatchers.Main) { SdkTokenRecord.record(minted) }
-        minted.sdkToken
-    }
 
     /**
      * The REST public API, which is a different host family from the SDK's gRPC one

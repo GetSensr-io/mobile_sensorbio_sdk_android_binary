@@ -48,10 +48,11 @@ import com.sensorbio.sensorbiosdk.datatypes.SB_UserProfileUpdate
 import kotlinx.coroutines.launch
 
 @Composable
-fun ProfileScreen(usernameOrEmail: String) {
+fun ProfileScreen(usernameOrEmail: String, onPair: () -> Unit) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val profile by SensorBioSDK.userProfileFlow.collectAsStateWithLifecycle()
+    val haveDevice by SensorBioSDK.haveDevice.collectAsStateWithLifecycle()
 
     // Editable fields, prefilled from the current profile once it arrives.
     var year by remember { mutableStateOf("") }
@@ -94,6 +95,7 @@ fun ProfileScreen(usernameOrEmail: String) {
                 InfoRow("Sex", p?.sex?.name ?: "—")
                 InfoRow("Age", p?.age?.toString() ?: "—")
                 InfoRow("Units", p?.units?.name ?: "—")
+                InfoRow("SDK version", SensorBioSDK.version)
             }
         }
 
@@ -202,6 +204,18 @@ fun ProfileScreen(usernameOrEmail: String) {
                 ) { Text(if (saving) "Saving…" else "Save changes") }
 
                 saveMsg?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
+            }
+        }
+
+        // Pairing is an account action, not a dashboard one — it belongs with the
+        // session it attaches the band to, which is where iOS has always had it.
+        if (!haveDevice) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Device", style = MaterialTheme.typography.titleMedium)
+                    Text("No device paired.")
+                    Button(onClick = onPair, modifier = Modifier.fillMaxWidth()) { Text("Pair a device") }
+                }
             }
         }
 
