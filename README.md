@@ -36,11 +36,11 @@ dependencyResolutionManagement {
 
 ```kotlin
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:0.13.0")
+    implementation("com.sensorbio:sensorbio-sdk:3.0.0")
 }
 ```
 
-(Groovy DSL is equivalent: `maven { url '…' }` + `implementation 'com.sensorbio:sensorbio-sdk:0.13.0'`.)
+(Groovy DSL is equivalent: `maven { url '…' }` + `implementation 'com.sensorbio:sensorbio-sdk:3.0.0'`.)
 
 ## What you get
 
@@ -60,24 +60,49 @@ dependencies {
 
 ## Use the SDK
 
-`SensorBioSDK` is the single entry point. Initialize once, then call it:
+`SensorBioSDK` is the single entry point. Initialize once, then call it.
+
+**Authentication needs one endpoint on your own server.** Your organization
+SDK Key (`sbsk_…`) is long-lived and org-wide, so it stays on your server;
+your server exchanges it for a single-use `sdk_token` that is worth one
+register-or-login, for one user, for a few minutes. Your app never sees the
+key.
 
 ```kotlin
 // Application.onCreate
-SensorBioSDK.initialize(this, SB_AppConfig(appType = SB_AppType.SENSR, appFlavor = BuildConfig.FLAVOR))
+SensorBioSDK.initialize(this)
 SensorBioSDK.environment = SB_Environment.PRODUCTION
 
-// Sign in
-val outcome = SensorBioSDK.signIn(email = email, password = password)
+// 1. Your backend calls POST /sdk/v1/token with `Authorization: SDKKey sbsk_…`
+//    and returns the organization_id + the single-use sdk_token.
+val minted = yourBackend.mintSensorBioToken()
+
+// 2. Hand both to the SDK.
+SensorBioSDK.sdkCredentials = SB_SDKCredentials(
+    organizationId = minted.organizationId,
+    sdkToken = minted.sdkToken,
+)
+
+// 3. Register or log in. The first call for a given userId registers;
+//    later calls log the same user back in. There is no email/password
+//    sign-in on the customer surface.
+val outcome = SensorBioSDK.registerUser(userId = yourUserId)
 
 // Observe device + read metrics
 SensorBioSDK.connected.collect { isConnected -> /* … */ }
 val dashboard = SensorBioSDK.fetchDashboardData(date = Instant.now(), tzOffset = tz)
 ```
 
+Get a fresh token for every registration and never cache one — a spent token
+fails inside `registerUser` as an authentication error, far from its cause.
+
+The SDK Key never reaches the device, and there is nothing else to configure:
+the organization is remembered for you, so an app relaunching into a restored
+session sets nothing.
+
 See **[`SDK_INTERFACE.md`](./SDK_INTERFACE.md)** for the full public surface, and **[`ExampleApp/`](./ExampleApp)**
-for a complete reference integration (sign-in / create-account → pair → dashboard with metric detail views,
-insights, profile).
+for a complete reference integration (token exchange → `registerUser` → pair → dashboard with metric
+detail views, insights, profile).
 
 ## Documentation
 
