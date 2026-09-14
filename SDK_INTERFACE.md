@@ -12,7 +12,7 @@ This document describes the **public** customer-facing surface of the SensorBio 
 
 > **Visibility note.** This covers the customer-facing API only. SDK-internal symbols and first-party
 > (`internal`-flavor) API are not part of the published binary and are not documented in the customer
-> copy. SDK `version = "3.0.0"`.
+> copy. SDK `version = "3.1.0"`.
 
 > **Backend guide.** Registration needs one endpoint on your own server, which mints the single-use
 > SDK token your app hands to the SDK. [§6](#6-minting-sdk-tokens--your-backend) is the guide for
@@ -41,7 +41,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:3.0.0")
+    implementation("com.sensorbio:sensorbio-sdk:3.1.0")
 }
 ```
 
@@ -302,8 +302,15 @@ What a host can rely on:
   temperature, engine-result and sleep paths mark rows uploaded only on success, so the rows stay
   put and re-queue once the user has signed back in.
 * It can arrive in any app state, background included.
-* Only reachable when a session is actually persisted. The pre-auth calls (login, createUser,
-  forgotten-password, e-mail availability) legitimately carry no credential and are never affected.
+* Only emitted when a session is actually persisted — session on disk plus no readable credential is
+  the state this reports, and nothing else is. An app that is merely signed out has no session to
+  re-authenticate, so it never sees this.
+* The pre-auth calls are never affected, and not because of the rule above: they are exempt by name.
+  `SB_APIClient.UNAUTHENTICATED_METHODS` mirrors the server's own exemption list
+  (`api/mobile/mobile.go`) and carries all thirteen RPCs the server serves without a credential —
+  login, account creation, activation-code and e-mail validation, and the whole forgotten-password
+  family. Membership there is what decides an RPC's auth contract, on this platform and on iOS
+  (`SB_APIClient.unauthenticatedMethods`, SB-2135).
 
 ### 3.3 Recording control (suspend, on the facade)
 
