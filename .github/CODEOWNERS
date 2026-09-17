@@ -1,0 +1,20 @@
+# CODEOWNERS - required reviewers for security-sensitive paths only (enforced via
+# the SB-892 org ruleset's "require Code Owner review"). There is deliberately NO
+# catch-all owner: routine pull requests need no code-owner review, they are gated
+# by CI and normal review. The security team is required ONLY on the paths below.
+#
+# Teams, not individuals, so this survives staff changes. @GetSensr-io/security
+# has maintain access across the org, so these entries resolve.
+
+# --- Security-relevant paths -> security team review ---
+/.github/                @GetSensr-io/security
+/.pre-commit-config.yaml @GetSensr-io/security
+/.gitleaks.toml          @GetSensr-io/security
+**/*auth*                @GetSensr-io/security
+**/*token*               @GetSensr-io/security
+**/*secret*              @GetSensr-io/security
+**/*credential*          @GetSensr-io/security
+**/*password*            @GetSensr-io/security
+**/*.pem                 @GetSensr-io/security
+**/*.keystore            @GetSensr-io/security
+**/*.jks                 @GetSensr-io/security
