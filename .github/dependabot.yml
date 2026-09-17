@@ -1,0 +1,41 @@
+version: 2
+
+# Dependabot config - SB-890, aligned with the tuned server_svc_core_api_monolith
+# and web_platform baseline.
+#
+# Per ecosystem, two groups separated by `applies-to`:
+#   patch-and-minor : version updates only; patch + minor batched into one PR
+#   security-fixes  : security (CVE) updates only; ALL packages batched into one
+#
+# Major version updates are intentionally IGNORED - bump majors deliberately,
+# they carry breaking changes. Security fixes still flow regardless of bump
+# size: security-update:* is distinct from the ignored version-update:semver-major.
+#
+# WHY THIS FILE LANDS AHEAD OF THE REST OF THE SB-890 BASELINE: SB-892 turns on
+# Dependabot security updates across the fleet. Without the security-fixes group
+# below, this repo would receive ONE PULL REQUEST PER VULNERABLE DEPENDENCY the
+# moment that happens. With it, every CVE fix arrives as one grouped pull
+# request per ecosystem.
+
+updates:
+
+  - package-ecosystem: gradle
+    directories:
+      - "/ExampleApp"
+      - "/ExampleApp/app"
+    schedule:
+      interval: monthly
+      day: "monday"
+      time: "06:00"
+    open-pull-requests-limit: 5
+    labels: [dependencies]
+    groups:
+      patch-and-minor:
+        applies-to: version-updates
+        update-types: [patch, minor]
+      security-fixes:
+        applies-to: security-updates
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: [version-update:semver-major]
