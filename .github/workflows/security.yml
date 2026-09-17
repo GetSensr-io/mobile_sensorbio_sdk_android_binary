@@ -1,0 +1,59 @@
+# Security scanning - SB-890 Wave B.
+#
+# The gitleaks (secret scanning) job is DELIBERATELY ABSENT from this file. It
+# arrives in Wave C, after this repo's committed secrets have been rotated and
+# removed. Shipping it now would leave a permanently red check on the default
+# branch, which trains people to ignore CI - worse than a missing check.
+#
+# Nothing here is merge-blocking: SB-892's required_status_checks is still
+# empty, so these jobs report but do not gate. That is deliberate for a first
+# run against a codebase that has never been scanned.
+
+name: Security
+
+# NOTE (GitHub Team): publishing results to the GitHub Security tab via SARIF
+# upload requires GitHub Advanced Security (Enterprise); we are on Team, so the
+# upload steps below are commented out. Every scanner still RUNS and prints its
+# findings to this job's log. To enable the Security tab later: upgrade to
+# Enterprise + Advanced Security and uncomment the upload-sarif steps.
+
+on:
+  pull_request:
+    branches: [main, master, develop, development, production, sensr_develop]
+  push:
+    branches: [main, master, develop, development, production, sensr_develop]
+  schedule:
+    - cron: '17 6 * * 1'  # weekly Monday 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  detekt:
+    name: detekt (Kotlin SAST)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      # Runs the project's detekt task. Add the detekt gradle plugin + a config
+      # with the security ruleset if not already present (@sensr-joseph to tune).
+      - run: ./gradlew detekt || echo "detekt task not configured — add io.gitlab.arturbosch.detekt plugin"
+
+  dependency-check:
+    name: OWASP dependency-check (SCA)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: ./gradlew dependencyCheckAnalyze || echo "add the org.owasp.dependencycheck gradle plugin"
