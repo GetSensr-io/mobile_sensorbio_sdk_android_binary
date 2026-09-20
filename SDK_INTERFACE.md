@@ -12,7 +12,7 @@ This document describes the **public** customer-facing surface of the SensorBio 
 
 > **Visibility note.** This covers the customer-facing API only. SDK-internal symbols and first-party
 > (`internal`-flavor) API are not part of the published binary and are not documented in the customer
-> copy. SDK `version = "3.1.1"`.
+> copy. SDK `version = "3.2.0"`.
 
 > **Backend guide.** Registration needs one endpoint on your own server, which mints the single-use
 > SDK token your app hands to the SDK. [§6](#6-minting-sdk-tokens--your-backend) is the guide for
@@ -41,7 +41,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:3.1.1")
+    implementation("com.sensorbio:sensorbio-sdk:3.2.0")
 }
 ```
 
@@ -92,11 +92,13 @@ Plain `var`s the host sets once after `initialize`:
 
 | Property | Type | Controls |
 |---|---|---|
-| `environment` | `SB_Environment` | gRPC target (dev/prod); runtime-switchable |
+| `environment` | `SB_Environment` | gRPC target (dev/prod). **Prefer `SB_AppConfig.environment`** — see below. This setter is for switching at runtime |
 | `sdkCredentials` | `SB_SDKCredentials?` | the organization id + single-use `sdk_token` your backend's exchange returned. Set immediately before `registerUser` — see §5.1 |
 | `logHandler` | `((SB_LogLevel, String?, Array<out Any?>) -> Unit)?` | sink for SDK logs (unset = silent) |
 
-App identity is set-once config passed into `initialize(context)`; every field of `SB_AppConfig` is defaulted, so a customer passes nothing but the context. `SB_AppType`/`appFlavor` are gone (SB-2095) — every value was a Sensr-Bio brand, so a third-party integration had no correct one to pass, and it had no effect on one either. App version + build are self-read from the `PackageManager` at init. `SB_FirmwareConfig` (S3 bucket + Cognito pool) is supplied out-of-band via the internal-only `configureFirmware`, not here.
+App identity is set-once config passed into `initialize(context)`; every field of `SB_AppConfig` is defaulted, so a customer passes nothing but the context.
+
+**Set `SB_AppConfig.environment` if you target anything but production.** `initialize` starts authenticated network activity of its own — the foreground credential check, the connectivity drain, the stale-submission sweep, and the white-label fetch — so the environment has to be known *before* it runs, not assigned afterwards. Assigning `SensorBioSDK.environment` after `initialize` returns leaves those first calls pointed at the default (`PRODUCTION`); against a staging session the server rejects the token and the 401 path ends the session (SB-2179). The `SensorBioSDK.environment` setter remains for hosts that switch at runtime, and rebuilds the channel when it does. `SB_AppType`/`appFlavor` are gone (SB-2095) — every value was a Sensr-Bio brand, so a third-party integration had no correct one to pass, and it had no effect on one either. App version + build are self-read from the `PackageManager` at init. `SB_FirmwareConfig` (S3 bucket + Cognito pool) is supplied out-of-band via the internal-only `configureFirmware`, not here.
 
 ---
 
@@ -255,6 +257,11 @@ The reports are also **persisted** against their submission row, so a host that 
 |---|---|---|
 | `activityReport` | recomputes calories from its own copy of the HR series and its own 30-day resting-HR baseline, and picks between two calorie formulas with a deployment env flag (`CALORIE_FORMULA_VO2MAX`) the client cannot observe. The SDK implements the documented default (HR-only Keytel). | the headline calorie figure can settle slightly when the timeline entry lands |
 | `meditationReport` | recomputes the score on **every read**, against baselines drawn from the whole account; the SDK's come from local sleep history (sleep-gated, five-day minimum, median, "0 means not established"). | a device with less history than the account can score lower, or hit a not-scoreable sentinel the server would not |
+
+
+**The HR series on both is the band's continuous-HR channel.** The band emits two independent HR signals — the per-second `continuous_hr` stream and the PPG algorithm's own `hrResult` — on different cadences. Activity and meditation graphs take the continuous stream as the series and admit an algorithm sample only where the continuous stream has nothing within 5 s, so the two are never interleaved. Continuous HR is primary because it is what the live-measures upload sends, which keeps the on-device graph and the server's graph the same graph. Earlier builds merged the two on exact timestamp equality; because their cadences differ the merge never collided and both survived, drawing two series as one (SB-2134). HRV and respiration still merge by equality — their two sources are the same `ppg_metrics` packet recorded twice at one epoch, so every point collides by design. The HR series is clamped to 20–220 bpm on all three report types; meditation alone had previously skipped that.
+
+Note that this makes the graph *coherent*, not automatically *correct*: if the continuous-HR channel itself is wrong for a span, the graph shows that wrong value smoothly rather than fighting with the algorithm's.
 
 Hosts should refresh an on-screen report in place when the server entry lands rather than re-navigating.
 
@@ -511,13 +518,46 @@ Called directly on `SensorBioSDK.<method>(…)`. One-shot reads are `suspend fun
 | Recording meta | `fetchRecordingMetaInfo(type) -> List<SB_RecordingSessionMetaItem>`, `deleteRecordingMeta(id, name, type)` |
 | Insights | `fetchNewInsights`, `submitInsightsFeedback`, `fetchPopulationInsightsMetricList`, `fetchPopulationInsights` |
 | Meditation | `fetchMeditationGraph(date: Instant, sessionTimestamp)` *(falls back to the locally-built report — §5.11)* |
-| Surveys | `submitBriefSurvey(survey)` *(suspend; awaits the upload)* |
+| Surveys | `submitBriefSurvey(survey)` *(suspend; returns once the answers are durable — the SDK owns when they go on the wire, see below)* |
 | Goals | `fetchGoals()`; `updateGoals(steps, calories, sleep)` *(suspend → `SB_UpdateGoalsOutcome`)* |
 | Stats | `fetchDailyStats(startDate, days, includeBiometrics, includeSleep, includeSteps)` |
 | Agreements | `shouldRequestAgreement`, `acceptAgreements(tosVersion, healthDataVersion)`, `acceptCurrentAgreements` *(suspend)* |
 | Account | `updateUserProfile(SB_UserProfileUpdate)`, `changePassword(currentPassword, newPassword)`, `requestPasswordReset`, `checkEmailAvailability`, `validateAccountRequirements(SB_ValidateAccountRequirementsRequest) -> SB_ValidateAccountRequirementsResult`, `refreshUser`, `hydrateSession`, `generateTemporaryAuthToken() -> String?`, `registerApp(deviceId)` |
 | Recording submit | `createActivitySession(activityName, startEpochMs, durationSecs)` *(suspend; manual after-the-fact log)* |
 | Session | `registerUser(userId, email?, sex?, birthdayYear?, birthdayMonth?, birthdayDay?, heightCm?, weightKg?, imperialUnits, activationCode?) -> SB_RegisterUserOutcome` *(SDK-key register-or-login; org creds come from `sdkCredentials` — see §5.1; this is the SDK's **only** registration path)*, `signOut()`, `persistUser`, `deleteAccount`, `clearSession`, `clearPrefsOnLogout` *(signed-in identity is observable — see §3.1 `session`/`userProfileFlow`)* |
+
+
+#### Brief surveys (SB-2177)
+
+`submitBriefSurvey` keeps its signature; what it does underneath changed, and the change is meant to
+be invisible. There is one way to submit a survey and this is it.
+
+**It no longer waits for the network.** The answers are written to the SDK's store first and the call
+returns as soon as they are durable. Dismiss your sheet immediately — do not gate a spinner on it,
+and do not disable the way off the screen. (iOS did exactly that until SB-2177, awaiting the RPC with
+Submit *and* Skip disabled; a 30s deadline plus retries and a token refresh add up to minutes of a
+screen the user cannot leave.)
+
+**The SDK decides when it goes on the wire, and "now" is often wrong.** A survey carries its
+recording's start timestamp — a sleep's end timestamp — as its only link to that record.
+Post-recording reports are built on the device and appear the instant a recording finalizes, so a
+user can answer within seconds, while the recording itself is still being uploaded. Sent then, the
+server has nothing to attach the survey to: it answers with an empty id, the survey is orphaned, and
+nothing on screen says so. The SDK holds the survey until the record is known to have landed, sends
+it then, retries on failure, and survives backgrounding and relaunch.
+
+**The answers are readable before they are sent.** Every read that produces a survey merges in what
+this device holds — `fetchWorkoutDetail`, `fetchMeditationGraph`, `fetchSleepDetail` /
+`sleepDetailUpdates`, and the `localWorkoutDetail` / `localMeditationGraph` replays — so there is
+nothing to refetch and nothing to stamp onto your model. A survey that has not landed wins over the
+server's copy; once it lands the server's wins, so a survey edited elsewhere is not shadowed by this
+device forever.
+
+**You no longer need the returned id.** It is the id the survey will be submitted under: the
+server's once one is known (an edit), empty before that. The SDK keeps the id on its own row and
+stamps it onto every later submit, so passing `survey.id = null` every time is now correct and
+cannot duplicate.
+
 
 | Server writes | `reprocessSleep` *(suspend; user-tapped, throws on failure)*, `updateUserDeviceInfo`, `uploadUserPhoto` *(→ URL)*, `deleteUserPhoto` |
 
@@ -1421,7 +1461,7 @@ Read it as a worked example of the request, the response, and what the app does 
 
 ## 8. Top-level symbols
 
-- **`SB_Environment`** (enum) — `DEVELOPMENT` (staging gRPC) / `PRODUCTION`. Set via `SensorBioSDK.environment`.
+- **`SB_Environment`** (enum) — `DEVELOPMENT` (staging gRPC) / `PRODUCTION`. Set via `SB_AppConfig.environment` at `initialize`; `SensorBioSDK.environment` switches it at runtime.
 - **`SB_LogLevel`** (enum) — `V/D/I/W/E`; passed to `logHandler`.
 
 ---
