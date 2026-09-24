@@ -36,20 +36,24 @@ dependencyResolutionManagement {
 
 ```kotlin
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:3.2.0")
+    implementation("com.sensorbio:sensorbio-sdk:3.3.0")
 }
 ```
 
-(Groovy DSL is equivalent: `maven { url '…' }` + `implementation 'com.sensorbio:sensorbio-sdk:3.2.0'`.)
+(Groovy DSL is equivalent: `maven { url '…' }` + `implementation 'com.sensorbio:sensorbio-sdk:3.3.0'`.)
 
 ## What you get
 
 - A single self-contained `.aar` — the embedded BLE + edge-algorithm binaries (incl. native
   `.so` for `arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64`) are bundled inside; no extra
   repositories or coordinates are required.
-- All open-source transitive dependencies (gRPC, protobuf, OkHttp, Room, AndroidX lifecycle,
-  coroutines, …) are declared in the published POM and resolved automatically from
-  `google()` / `mavenCentral()`.
+- gRPC, protobuf-javalite and Guava are bundled too, relocated under
+  `com.sensorbio.sdk.shaded.*`, so they never collide with your app's own copies and you can
+  use any version of them. Their versions are listed inside the `.aar` at
+  `META-INF/com.sensorbio.sdk/THIRD_PARTY_NOTICES.txt`; the SDK ships its own R8 rules for them.
+- The remaining open-source dependencies (OkHttp, Gson, joda-time, Paho MQTT, DiskLruCache,
+  Room, AndroidX lifecycle/WorkManager, coroutines, …) are declared in the published POM and
+  resolved automatically from `google()` / `mavenCentral()`.
 - The public SDK surface only: integrate against the `SensorBioSDK` entry point.
 
 ## Requirements
@@ -121,6 +125,16 @@ See [`com/sensorbio/sensorbio-sdk/maven-metadata.xml`](com/sensorbio/sensorbio-s
 `SDK_INTERFACE.md` documents the public surface as of each release.
 
 ## Release notes
+
+### v3.3.0 — September 24, 2026
+
+- **gRPC, protobuf-javalite and Guava are now bundled inside the SDK, relocated under `com.sensorbio.sdk.shaded.*`.** They no longer collide with your app's own copies (for example Firebase Firestore's protobuf), and you can use any version of them you like. **If your build has `exclude(group = "com.google.guava", module = "listenablefuture")`, remove it.** Earlier SDKs needed it. With this release it removes WorkManager's `ListenableFuture` entirely, and WorkManager fails at runtime. The bundled libraries and their versions are listed inside the `.aar` at `META-INF/com.sensorbio.sdk/THIRD_PARTY_NOTICES.txt`.
+- **Heart-rate zones can be computed on the device.** When your organization enables the HR Zone algorithm, `exerciseZoneAttributes` carries zones computed from the wearer's age, sex and resting heart rate, and the new `SB_ExerciseZoneAttributes.deviceComputed` is `true`. If you apply your own max-HR override, skip it when `deviceComputed` is `true`. With the algorithm on, a finished activity's zone breakdown is uploaded first, so its submit can wait up to 90 seconds.
+- **Editing or deleting a workout that hasn't uploaded yet now works.** `modifyWorkout` keeps its signature. An edit made before the recording reaches the server is stored, shown on every read right away, and sent once the recording lands. `REMOVE` works on those rows too, so you no longer need to hide delete on a locally built row. A non-`Ok` outcome now means the server rejected the values themselves.
+- **`cancelCurrentRecording` really discards the session.** Nothing is stored, reported or uploaded, and a later launch can't bring the session back. `recordingState` goes straight from `Recording` to `Idle`.
+- **Countdown recordings end exactly on their target.** A 30-minute meditation stores exactly 30:00, and the auto-stop fires on time with the screen off. The SDK merges the `WAKE_LOCK` permission for you.
+- **Auto-detected activities only appear for organizations with activity detection enabled.** For every other organization, `detectedActivities` stays empty whatever the band's firmware sends.
+- **Fixes:** a band in recovery mode can now pair and take a firmware update. Zero and invalid PPG metrics are no longer stored or uploaded. Signing out during a cache write no longer crashes.
 
 ### v3.2.0 — September 20, 2026
 

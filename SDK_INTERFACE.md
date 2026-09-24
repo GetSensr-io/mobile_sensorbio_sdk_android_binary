@@ -12,7 +12,7 @@ This document describes the **public** customer-facing surface of the SensorBio 
 
 > **Visibility note.** This covers the customer-facing API only. SDK-internal symbols and first-party
 > (`internal`-flavor) API are not part of the published binary and are not documented in the customer
-> copy. SDK `version = "3.2.0"`.
+> copy. SDK `version = "3.3.0"`.
 
 > **Backend guide.** Registration needs one endpoint on your own server, which mints the single-use
 > SDK token your app hands to the SDK. [§6](#6-minting-sdk-tokens--your-backend) is the guide for
@@ -41,14 +41,26 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:3.2.0")
+    implementation("com.sensorbio:sensorbio-sdk:3.3.0")
 }
 ```
 
 The single coordinate brings everything: the SDK plus the embedded BLE + edge-algorithm binaries
 (including native `.so` for `arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64`) are bundled inside the one
-`.aar`; all open-source transitive dependencies (gRPC, protobuf, OkHttp, Room, AndroidX lifecycle,
+`.aar`. **gRPC, protobuf-javalite and Guava are bundled too, relocated under
+`com.sensorbio.sdk.shaded.*`**, so they never collide with your app's own copies (e.g. Firebase
+Firestore's protobuf) and you can use any version of them you like. The remaining open-source
+dependencies (OkHttp, Gson, joda-time, Paho MQTT, DiskLruCache, Room, AndroidX lifecycle/WorkManager,
 coroutines, …) are declared in the POM and resolved automatically from `google()` / `mavenCentral()`.
+The bundled libraries and their versions are listed in the binary repo's README and inside the `.aar`
+at `META-INF/com.sensorbio.sdk/THIRD_PARTY_NOTICES.txt`. The SDK ships its own R8/ProGuard rules for
+them; no keep rules are needed in your app.
+
+> **Upgrading from 3.2.0 or earlier:** if your build has
+> `exclude(group = "com.google.guava", module = "listenablefuture")` (earlier SDKs needed it to avoid a
+> duplicate `ListenableFuture`), remove it. The SDK no longer ships Guava's copy of that class, so the
+> exclude now removes it entirely and WorkManager fails at runtime unless your app also depends on
+> full Guava.
 
 
 **Platform:** `compileSdk 36`, `minSdk 29`, Java 17.
@@ -125,7 +137,7 @@ event streams, recording control, device & BLE control (§3.4), and the flat ser
 | `recordingHRSeries` | `StateFlow<List<SB_TimeValuePoint>>` | the recording's HR, complete — live samples merged with the rows synced from the band, anchored at the recording's start, paused spans excluded, ascending. **Bind a chart to this rather than accumulating `hr`**: `hr` is a live BLE passthrough, so a chart fed from it has a hole the width of any disconnect. Current *or most recent* recording; reset by the next recording's start, not by finalize |
 | `recordingPauseSegments` | `StateFlow<List<SB_TimeSegment>>` | the recording's completed pause windows, in `recordingHRSeries`' timebase. Band these on the chart — since the series back-fills, a gap that isn't listed here is missing data, not a pause. Completed windows only; a pause in progress appears on resume (`isRecordingPaused` covers the live state) |
 | `lastSyncedTemp` | `SB_LiveMetric?` | latest skin-temp reading from sync as a dashboard live-metric (value/unit in the user's °C/°F units); null until first |
-| `exerciseZoneAttributes` | `SB_ExerciseZoneAttributes?` | HR effort-zone config; null when unconfigured, auto-clears on logout |
+| `exerciseZoneAttributes` | `SB_ExerciseZoneAttributes?` | HR effort-zone config; null when unconfigured, auto-clears on logout. Normally the server's, or computed on device when your org runs the **HR Zone algorithm** — see below |
 | `buttonTaps` | `StateFlow<Int?>` | latest device button-tap count. Pairing no longer needs this — the SDK consumes it internally to detect the confirmation press (§3.4 *Pairing*); null until first tap |
 | `connected` | `StateFlow<Boolean>` | BLE connection is up |
 | `bluetoothAvailable` | `StateFlow<Boolean>` | phone BLE availability |
@@ -164,6 +176,33 @@ event streams, recording control, device & BLE control (§3.4), and the flat ser
 > reading `weightKG` / `heightCM` directly should apply the same `> 0` test — the
 > value being present is not the same as it being real. iOS has the matching
 > behaviour in its `currentUserBMR` (SB-2002).
+
+> **Where `exerciseZoneAttributes` comes from.** Normally the server's: `maxHr`, `rhr` and
+> `zoneWeights` are whatever the last successful goals fetch returned. If your organization has the
+> **HR Zone algorithm** enabled in the Algo Store, the SDK computes them on device instead, this flow
+> publishes those values, and `SB_ExerciseZoneAttributes.deviceComputed` is `true`.
+>
+> The device-computed form follows the published *How Heart Rate Zones Work* methodology: `maxHr` is
+> **always** estimated from the user's age and sex — a max stored on `SB_UserProfile` (`maxHr` /
+> `computedMaxHr`) is deliberately **not** consulted, because estimating is what the algorithm is,
+> and preferring the stored value makes it reproduce the server's own zones. `rhr` is the user's own
+> resting heart rate — today's if last night was scored, otherwise the mean of the last 30 days,
+> otherwise a nominal 65 bpm — and `zoneWeights` are `[0.5, 0.6, 0.7, 0.8, 0.9]`. Zone *n* therefore
+> opens at `rhr + weight[n] × (maxHr − rhr)`.
+>
+> **If you derive your own max HR, stand it down when `deviceComputed` is `true`.** A host that
+> prefers a user-entered maximum over the SDK's — reasonable when the SDK's is a population estimate
+> — reproduces the server's zones exactly if it applies that override here, which silently undoes the
+> algorithm.
+>
+> This drives the **live recording** zone bands. It does not retro-score stored workouts — see
+> *HR zones on a stored workout* in §5.9. The shape of the value does not change, so no consumer needs
+> updating; the numbers do. Zone boundaries become personal to the wearer and move as their resting
+> heart rate does, which means they are **not** comparable between two users.
+>
+> When the algorithm is enabled the SDK also **uploads** a per-workout zone breakdown as the
+> algorithm's stored result, which briefly gates the recording's submit — see *The zone breakdown the
+> SDK uploads* in §5.9.
 
 ### 3.2 Event streams — `SharedFlow` (one-shot)
 
@@ -328,7 +367,7 @@ What a host can rely on:
 | `recordMeditation` | `suspend (duration, minDuration, sessionName?, sessionNameAlreadyExists, surveyUrl?) -> Unit` | meditation (always a `duration`-sec countdown). **Awaits end-to-end**; same return/throw contract as `recordActivity` |
 | `awaitActiveRecordingCompletion` | `suspend () -> Unit` | await a recording the host did **not** start via `record*()` (a process-kill resume) so it can run the survey + surface errors identically; no-op when idle |
 | `finishCurrentRecording` | `suspend () -> Unit` | signal stop + window-sync + schedule submit; outcome surfaces in the in-flight `record*()` await |
-| `cancelCurrentRecording` | `() -> Unit` | abort without submit |
+| `cancelCurrentRecording` | `() -> Unit` | abort without submit — the session is discarded outright: nothing is stored, no report is published, nothing is queued for upload, and the persisted envelope is cleared so a later launch can't resurrect it. The band is stopped (or the stop armed for the next configure) and `recordingState` goes straight from `Recording` to `Idle` with no `Finalizing` phase; an in-flight `record*()`/`awaitActiveRecordingCompletion()` await resolves as a cancellation |
 | `pauseRecording` | `() -> Unit` | pause the running activity/meditation: freeze the elapsed clock + stop the device PPG stream (no biometrics accrue). No-op if not recording / already paused / spot-check |
 | `resumeRecording` | `() -> Unit` | resume a paused recording: record the pause window + restart the device stream. Each paused span is excluded from the session's `active_workout_segments` |
 | `resumeActiveRecording` | `() -> Unit` | resume a recording persisted across a process kill (crash-restore / app launch). Since SB-1745 this is *restore*, not blindly *resume*: if the persisted envelope carries a stop intent (the user had already tapped End before the process died) it re-enters finalize at the persisted stop instant instead of resuming the count-up; if the envelope is older than 24h with no stop intent it is discarded rather than resurrected. Only a genuinely still-running session resumes live |
@@ -346,6 +385,13 @@ that no `StateFlow` collector could dedupe: four to five recompositions a second
 the length of a recording. Measured on a Pixel 10 Pro over matched 20-minute screen-on activity
 recordings, coalescing plus the host-side chart and animation fixes was worth ~13% of app CPU and ~12%
 of battery drain.)
+
+**Countdowns end on their target (SB-2243).** For a countdown (`targetMs != null`) the published
+`elapsedMs` never exceeds `targetMs`, and a session that auto-stops on its countdown is stored ending at
+the instant it reached the target, so a 30-minute meditation records exactly 30:00 no matter how late
+the stop tick ran. The SDK holds a partial wakelock while a countdown runs (released on pause and at
+the end, and bounded by a timeout) so the auto-stop and its end cue fire on time with the screen off.
+The `WAKE_LOCK` permission merges in from the SDK manifest; the host doesn't declare it.
 
 ### 3.4 Device & BLE control (on the facade)
 
@@ -558,6 +604,47 @@ server's once one is known (an edit), empty before that. The SDK keeps the id on
 stamps it onto every later submit, so passing `survey.id = null` every time is now correct and
 cannot duplicate.
 
+
+#### Workout modifications (SB-2217)
+
+`modifyWorkout(action = UPDATE, …)` keeps its signature; what it does underneath changed, in the same
+way and for the same reason as `submitBriefSurvey` above. `REMOVE` and `IGNORE` are unchanged.
+
+**The SDK decides when it goes on the wire.** `ModifyWorkoutRequest` addresses a workout by its start
+timestamp and nothing else, so it can only be applied to a workout the server already has.
+Post-recording reports and timeline rows are built on the device and appear the instant a recording
+finalizes (§5.11), so a user can edit a session's duration or calories within seconds of finishing it
+— while the recording itself is still uploading. Sent then, the server answers `NOT_FOUND` and the
+edit is simply refused. The SDK now records the edit first, holds it until the recording is known to
+have landed, sends it then, retries on failure, and survives backgrounding and relaunch.
+
+**The outcome means something narrower than it did.** For a workout the server already has — every
+workout it returned in the first place — the call is the same synchronous one it always was and the
+server's verdict comes back unchanged. Otherwise it returns `Ok` once the edit is durable. A
+retryable failure also returns `Ok`, because the row survives and will be retried. A non-`Ok` outcome
+now means the server rejected the values themselves, so it is worth showing the user; it no longer
+means "this activity is too new to edit".
+
+**The new values are readable before they are sent.** Every read that produces a workout applies a
+pending edit — `fetchWorkoutDetail`, `localWorkoutDetail`, and the synthesized rows from
+`localRecordingEntries` — covering the end timestamp, the calorie/distance metrics, and the header
+tiles that render them. There is nothing to refetch and nothing to stamp onto your model; a plain
+re-read after saving is enough. A pending edit wins over the server's copy; once it lands the
+server's wins, so an edit made on the web dashboard is not shadowed by this device forever.
+
+**A second edit before the first lands rewrites one row**, merged key by key, rather than queueing a
+second modification — so a form that shows only duration cannot silently discard a queued calorie
+change.
+
+**`REMOVE` works on a workout that hasn't uploaded, too.** There is no server row to delete, so the
+SDK discards the submission instead — the timeline row, the stored report, and any queued edit or
+survey for it all go with it, and a submit still on the job queue notices the recording is gone and
+declines to send it. A submit that was already on the wire when the delete arrived is caught on its
+way back and undone server-side, so a deleted activity cannot reappear on a later fetch. Whether a
+delete is local or remote is bookkeeping only the SDK can see, so it
+is no longer something to ask about: call `modifyWorkout(REMOVE, …)` for any row. §5.11 used to tell
+you to hide delete on a locally-rendered row; that instruction is withdrawn, and if you implemented
+it you can take it out.
 
 | Server writes | `reprocessSleep` *(suspend; user-tapped, throws on failure)*, `updateUserDeviceInfo`, `uploadUserPhoto` *(→ URL)*, `deleteUserPhoto` |
 
@@ -1004,6 +1091,68 @@ The read **falls back to the server** when the day has no activity rows on devic
 
 Org custom / white-label activity scoring stays server-computed.
 
+#### HR zones on a stored workout (SB-2231)
+
+`SB_HRMData.exerciseZoneList` — the time-in-zone breakdown and the chart's zone lines — is **always
+the server's**, on every read path, including when the HR Zone algorithm is enabled.
+
+The server scores the zones at ingest and stores them, and `SubmitFinishedRecordingSession` has no
+field to send zones up, so the device has no say in the stored copy. That is deliberate rather than a
+gap: a report's zones are a fact about when the workout happened. Recomputing them at read time
+against the wearer's *current* resting heart rate would make a stored report change every time it was
+opened, and change differently after a birthday.
+
+So the algorithm affects the **live recording chart**, where "now" is the right anchor, and not a
+stored report. To move a stored report's zones, the algorithm's result has to be uploaded and stored —
+at which point the report shows them because the server holds them, not because the device recomputed
+them.
+
+**One exception, and only one:** the report built on device the instant a recording stops, before the
+server has ingested it (§5.11). There is no server-scored list yet, and that screen has to continue
+the boundaries the user just spent the workout watching, so it uses the algorithm's, evaluated at the
+session's own start. Once the recording is ingested the timeline serves the server's copy as usual.
+
+That means **the same workout reads differently in the two places** until the algorithm's result is
+uploaded: the just-finished report shows the device's zones, the timeline shows the server's. That is
+a known consequence of the device having no way to tell the server which zones it used, not a bug, and
+it closes when the upload lands.
+
+#### The zone breakdown the SDK uploads (SB-2231)
+
+When the HR Zone algorithm is enabled, a finished **activity** — not a meditation, not a spot check —
+has its zone breakdown computed on device and uploaded as the algorithm's stored result, before the
+activity itself is submitted. Nothing in the host's API changes: the SDK owns computing, queueing,
+uploading and retrying it, and a host neither triggers nor observes it.
+
+Two things a host *can* observe, both about timing:
+
+* **A recording's submit can be held back for up to 90 seconds** while its result uploads. The result
+  has to reach the server ahead of the activity, so the submit waits on it exactly as it already waits
+  on the recording's biometrics. During that window the recording stays in `inflightSubmissions` at
+  `PENDING_UPLOAD`, which is what it does today whenever an upload is outstanding — so a host that
+  already renders those cards needs no change.
+* **The wait is capped.** After 90 seconds the submit goes ahead without the result, and the result is
+  uploaded on a later pass. A payload the server refuses outright (a `valueJson` that does not match
+  the algorithm's registered schema) is marked dead rather than retried, so a schema mismatch costs
+  one recording's 90 seconds rather than every recording's.
+
+A recording the user deletes before it reaches the server takes its queued result with it: the result
+describes an activity that is never going to exist server-side.
+
+The uploaded payload's zone boundaries are the reserve-formula ones described in §3.1, and its
+per-zone durations are shares of the recording's **active** time — paused spans excluded, because the
+zone times come from HR samples and those already exclude them. The five shares therefore do **not**
+sum to 100: zone 1 opens at 50% of heart-rate reserve and any time spent below that belongs to no
+zone. iOS uploads the identical shape (SB-2230), which is the point — a result uploaded by one
+platform is read back by the other.
+
+One further difference on the locally-built report: it carries **all five zones**, including ones with
+no time in them (`displayValue` `"0 min"`, `progressValue` `0`). The server drops empty zones. The list
+also drives the report chart's limit lines and y-axis, so dropping them left a gentle walk with no zone
+lines at all and an axis collapsed to the HR range, while the live chart for the same workout had shown
+five. A host that renders the breakdown as a list will now show five rows rather than only the zones
+reached.
+
 ---
 
 ### 5.10 One daily shape for all four biometrics (SB-1738) ⚠️ breaking
@@ -1105,10 +1254,10 @@ Four merge rules, and each one is a bug if dropped:
 | **Not while searching or filtering** | a synthesized row has not been through the server's query |
 | **Group by `SB_LocalRecordingEntry.dateInt`** | supplied from the session's own timezone offset; re-deriving the day host-side is how a just-finished recording lands under yesterday's header |
 
-Also disable delete/modify on these rows — `modifyWorkout(REMOVE)` addresses a timeline entry that does
-not exist server-side yet. A submission with **no** stored report (a manually-logged session, or a row
-finalized before reports were persisted) is absent from this list and still appears in
-`inflightSubmissions`.
+**Edit and delete these rows exactly like any other** — `modifyWorkout` handles both cases itself
+(SB-2217, above), so there is nothing to gate on. A submission with **no** stored report (a
+manually-logged session, or a row finalized before reports were persisted) is absent from this list
+and still appears in `inflightSubmissions`.
 
 > **iOS divergence.** iOS's `SB_LocalRecordingEntry` carries a fourth field, `scoredNoResult`, for a
 > spot check the server accepted but scored nothing for. Android has no such state: a spot check the
@@ -1121,6 +1270,12 @@ The band's firmware can decide by itself that an activity has started — from a
 from cadence, or from both agreeing — switch the PPG into continuous mode to capture it, and stop
 when it thinks the activity is over. On the next sync that arrives as a single activity bookend with
 a non-negative payload, and the SDK stores it.
+
+**Only for organizations with the `auto_activity_detection` algorithm enabled in the Algo Store
+(SB-2164).** For any other organization the SDK drops detection bookends when they arrive, whatever
+the band's firmware sends, and `detectedActivities` stays empty. The check happens when a bookend
+arrives, so detections already stored stay answerable if the algorithm is later disabled.
+User-started recordings are unaffected.
 
 **Nothing is uploaded on its own.** A detection is an *offer*: the SDK holds it in the durable
 `detected_activity` table and publishes it, and the user either confirms it (which submits it as a

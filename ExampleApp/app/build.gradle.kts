@@ -35,17 +35,10 @@ android {
     }
 }
 
-// gRPC pulls in Guava, which *contains* `com.google.common.util.concurrent.ListenableFuture`, while
-// some transitive dep also pulls the empty `listenablefuture:1.0` marker artifact that declares the
-// same class — a duplicate-class build failure. Excluding the marker is the standard Android fix.
-configurations.configureEach {
-    exclude(group = "com.google.guava", module = "listenablefuture")
-}
-
 dependencies {
     // The entire SensorBio integration: one coordinate, resolved from the public Maven repo.
     // It brings the embedded BLE + edge binaries and declares its OSS transitive deps (incl. coroutines).
-    implementation("com.sensorbio:sensorbio-sdk:3.2.0")
+    implementation("com.sensorbio:sensorbio-sdk:3.3.0")
 
     val composeBom = platform("androidx.compose:compose-bom:2024.09.03")
     implementation(composeBom)

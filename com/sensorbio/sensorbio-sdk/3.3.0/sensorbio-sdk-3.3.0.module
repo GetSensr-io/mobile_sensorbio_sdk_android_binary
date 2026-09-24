@@ -1,0 +1,188 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "group": "com.sensorbio",
+    "module": "sensorbio-sdk",
+    "version": "3.3.0",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "8.14.3"
+    }
+  },
+  "variants": [
+    {
+      "name": "publicReleaseVariantPublicReleaseApiPublication",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.libraryelements": "aar",
+        "org.gradle.usage": "java-api"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-coroutines-android",
+          "version": {
+            "requires": "1.10.2"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "sensorbio-sdk-3.3.0.aar",
+          "url": "sensorbio-sdk-3.3.0.aar",
+          "size": 18566431,
+          "sha512": "26adcecfd7a43850f1ddf19969cb922b70e8e8a25c61cfc4db1ada5aeb6a1d1a6f5b000299f369334b3bbf57b9b8ad39f0ab9bcdb9dd2df86bc6bc302afdf58c",
+          "sha256": "df6028135ba021a7a13900059796633a0c1adc07705d19ce0944888a929a25bc",
+          "sha1": "9a3d258afcca5b5192479be132459560b5015417",
+          "md5": "aaf9cbf89d20544e9e23173974ba1419"
+        }
+      ]
+    },
+    {
+      "name": "publicReleaseVariantPublicReleaseRuntimePublication",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.libraryelements": "aar",
+        "org.gradle.usage": "java-runtime"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-parcelize-runtime",
+          "version": {
+            "requires": "2.2.10"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.2.10"
+          }
+        },
+        {
+          "group": "androidx.room",
+          "module": "room-runtime",
+          "version": {
+            "requires": "2.7.2"
+          }
+        },
+        {
+          "group": "androidx.room",
+          "module": "room-ktx",
+          "version": {
+            "requires": "2.7.2"
+          }
+        },
+        {
+          "group": "androidx.lifecycle",
+          "module": "lifecycle-livedata-ktx",
+          "version": {
+            "requires": "2.9.3"
+          }
+        },
+        {
+          "group": "androidx.lifecycle",
+          "module": "lifecycle-process",
+          "version": {
+            "requires": "2.9.3"
+          }
+        },
+        {
+          "group": "com.google.code.gson",
+          "module": "gson",
+          "version": {
+            "requires": "2.13.1"
+          }
+        },
+        {
+          "group": "org.eclipse.paho",
+          "module": "org.eclipse.paho.client.mqttv3",
+          "version": {
+            "requires": "1.2.5"
+          }
+        },
+        {
+          "group": "joda-time",
+          "module": "joda-time",
+          "version": {
+            "requires": "2.14.0"
+          }
+        },
+        {
+          "group": "com.squareup.okhttp3",
+          "module": "okhttp",
+          "version": {
+            "requires": "5.1.0"
+          }
+        },
+        {
+          "group": "com.jakewharton",
+          "module": "disklrucache",
+          "version": {
+            "requires": "2.0.2"
+          }
+        },
+        {
+          "group": "androidx.security",
+          "module": "security-crypto",
+          "version": {
+            "requires": "1.1.0"
+          }
+        },
+        {
+          "group": "androidx.work",
+          "module": "work-runtime-ktx",
+          "version": {
+            "requires": "2.10.3"
+          }
+        },
+        {
+          "group": "androidx.core",
+          "module": "core-ktx",
+          "version": {
+            "requires": "1.17.0"
+          }
+        },
+        {
+          "group": "androidx.lifecycle",
+          "module": "lifecycle-viewmodel-compose",
+          "version": {
+            "requires": "2.8.7"
+          }
+        },
+        {
+          "group": "com.jakewharton.timber",
+          "module": "timber",
+          "version": {
+            "requires": "5.0.1"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-coroutines-android",
+          "version": {
+            "requires": "1.10.2"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "sensorbio-sdk-3.3.0.aar",
+          "url": "sensorbio-sdk-3.3.0.aar",
+          "size": 18566431,
+          "sha512": "26adcecfd7a43850f1ddf19969cb922b70e8e8a25c61cfc4db1ada5aeb6a1d1a6f5b000299f369334b3bbf57b9b8ad39f0ab9bcdb9dd2df86bc6bc302afdf58c",
+          "sha256": "df6028135ba021a7a13900059796633a0c1adc07705d19ce0944888a929a25bc",
+          "sha1": "9a3d258afcca5b5192479be132459560b5015417",
+          "md5": "aaf9cbf89d20544e9e23173974ba1419"
+        }
+      ]
+    }
+  ]
+}
