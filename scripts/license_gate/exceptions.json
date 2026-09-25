@@ -1,0 +1,10 @@
+{
+  "_comment": "Documented licence elections for the MSA 6.6B gate (SB-2204). Every entry states which licence Sensor Bio takes the component under and where that was verified. An election may only land on a licence the policy already allows.",
+  "exceptions": {
+    "com.sensorbio:sensorbio-sdk": {
+      "license": "PROPRIETARY-SENSORBIO",
+      "reason": "First-party. This is the Sensor Bio Android SDK itself, which this repository publishes; it is not third-party open source and carries no inbound licence obligation. It resolves to no POM on any public repository, which is why the gate reports no licence grant rather than a wrong one.",
+      "source": "Built from GetSensr-io/mobile_sensorbio_sdk_android, gated in its own right by the licence gate in that repository."
+    }
+  }
+}
