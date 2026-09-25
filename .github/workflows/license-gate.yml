@@ -1,0 +1,64 @@
+# Open-source licence gate for the MSA 6.6B warranty (SB-2204).
+#
+# SB-2055/SB-2056 gated backend, web_platform and infrastructure. This repo is
+# the case that matters most for the warranty: customers link this code into
+# their own applications, so they inherit our transitive licences directly.
+#
+# ADVISORY for now, per ADR-002 and the SB-2204 rollout. The gate reports
+# findings and the job still passes, so nobody's PR is blocked by licence debt
+# that predates the gate. Once the backlog is cleared, add --blocking to the
+# gate step and this starts failing the build on a new forbidden licence.
+#
+# The checker is Python standard library only and needs no toolchain, SDK or
+# credentials, so it runs on a stock Linux runner rather than a Mac or an
+# Android image, and it never touches the build of the shipped artifact.
+name: License gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+  schedule:
+    # Weekly, so a licence change published upstream is caught even when the
+    # repo itself is quiet.
+    - cron: "41 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: license-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  license-gate:
+    name: license-gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+      # The classifier carries its own tests. They are fast and hermetic, and a
+      # miscategorised licence is the one failure mode that would make the gate
+      # worse than no gate at all.
+      - name: Classifier tests
+        run: python3 scripts/license_gate/test_policy.py
+
+      - name: License gate (MSA 6.6B)
+        env:
+          # Lifts the GitHub API rate limit for the licence lookups. Read-only.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/license_gate/gate.py --csv component-register.csv
+
+      # The register is the same shape as the audit deliverable, so a customer
+      # request can be answered from a build artifact rather than re-derived.
+      - name: Upload component register
+        if: always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: component-register-${{ github.sha }}
+          path: component-register.csv
+          retention-days: 90
+          if-no-files-found: warn
