@@ -1,0 +1,20 @@
+# gitleaks configuration (SB-890 Wave C).
+#
+# Extends gitleaks' built-in rules. Add REPO-SPECIFIC allowlists below as real
+# false-positives surface (vendored/minified libs, test fixtures, client-side
+# public keys). Keep every entry NARROW and COMMENTED -- allowlisting is for
+# noise reduction, NOT for trusting code. A broad allowlist is a blind spot.
+#
+# This repo scanned CLEAN on the Wave C pre-scan (gitleaks v8.21.2, default
+# ruleset, 2026-09-29), so there is nothing allowlisted and nothing to rotate.
+title = "sensorbio gitleaks config"
+
+[extend]
+useDefault = true
+
+# Example repo-specific allowlist (uncomment + adapt):
+# [allowlist]
+# description = "repo-specific false positives"
+# paths = [
+#   '''vendor/.*''',   # why this path is a verified false positive
+# ]
