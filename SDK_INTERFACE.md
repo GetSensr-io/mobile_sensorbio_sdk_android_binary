@@ -12,7 +12,7 @@ This document describes the **public** customer-facing surface of the SensorBio 
 
 > **Visibility note.** This covers the customer-facing API only. SDK-internal symbols and first-party
 > (`internal`-flavor) API are not part of the published binary and are not documented in the customer
-> copy. SDK `version = "3.3.0"`.
+> copy. SDK `version = "3.4.0"`.
 
 > **Backend guide.** Registration needs one endpoint on your own server, which mints the single-use
 > SDK token your app hands to the SDK. [§6](#6-minting-sdk-tokens--your-backend) is the guide for
@@ -41,7 +41,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:3.3.0")
+    implementation("com.sensorbio:sensorbio-sdk:4.0.0")
 }
 ```
 
@@ -150,7 +150,7 @@ event streams, recording control, device & BLE control (§3.4), and the flat ser
 | `inflightSubmissions` | `StateFlow<List<SB_RecordingSubmissionInfo>>` | finished recordings the server hasn't ingested yet (newest first); host pins them atop the timeline as Uploading…/Processing…/Couldn't-sync cards. Reconcile with `reconcileSubmissions(...)` after each timeline fetch |
 | `webAppCookie` | `StateFlow<String?>` | web-dashboard auth cookie from the login response; set on sign-in, cleared on sign-out, persisted |
 | `userProfileFlow` | `StateFlow<SB_UserProfile?>` | reactive signed-in profile; emits on sign-in / profile / photo / goals / globals refresh / sign-out |
-| `userAppSettings` | `StateFlow<SB_UserAppSettings?>` | reactive app-settings (units/preferences); null until loaded, manual refresh via `refreshUserAppSettings()` |
+| `userAppSettings` | `StateFlow<SB_UserAppSettings>` | reactive app-settings (units/preferences); never null — holds the defaults until the server globals load (and again after sign-out), manual refresh via `refreshUserAppSettings()` |
 | `session` | `StateFlow<SB_Session?>` | reactive auth-session identity, derived from the profile; null when signed out |
 | `organization` | `StateFlow<SB_OrganizationMembership?>` | reactive org membership; null when signed out |
 | `featureFlags` | `StateFlow<List<String>>` | reactive feature flags; set at login + globals refresh, cleared on sign-out |
@@ -208,9 +208,9 @@ event streams, recording control, device & BLE control (§3.4), and the flat ser
 
 | Flow | Payload | Purpose |
 |---|---|---|
-| `deviceReset` | `SB_DeviceResetResult` | device-reset outcome |
-| `analyticsEvents` | `SB_AnalyticsEvent` | SDK telemetry events incl. recording start/end (name + properties); host forwards to its backend |
-| `latestBookend` | `SB_LatestBookend` | activity window resolved by sync (spot-check confirm) |
+| `deviceReset` | `SB_DeviceResetResult(id, successful)` | device-reset outcome: the device id and whether the band confirmed the reset |
+| `analyticsEvents` | `SB_AnalyticsEvent` | SDK telemetry events (name + string properties) for the host to forward to its analytics provider; the full, iOS-identical event set is in §3.2.3 |
+| `latestBookend` | `SB_LatestBookend(startTs, endTs)` | activity window (epoch ms) resolved by a sync from the band's activity bookends (spot-check confirm) |
 | `deviceLinkFailed` | `SB_DeviceLinkFailure` | a device-link (serial-enforcement) rejection; host alerts "wrong device" / retry |
 | `firmwareProgress` | `Float` | raw firmware-flash progress percent (0–100); pairs with the suspend `updateFirmware()` (§3.4) |
 | `syncCompleted` | `SB_SyncResult?` | a device sync drained; non-null on detailed completion, null on short-circuit |
@@ -358,6 +358,77 @@ What a host can rely on:
   family. Membership there is what decides an RPC's auth contract, on this platform and on iOS
   (`SB_APIClient.unauthenticatedMethods`, SB-2135).
 
+#### 3.2.3 Analytics events — `analyticsEvents` / `SB_AnalyticsEvent`
+
+`analyticsEvents: SharedFlow<SB_AnalyticsEvent>` publishes SDK telemetry for you to forward to your
+own analytics provider. `SB_AnalyticsEvent` is `data class SB_AnalyticsEvent(val name: String, val
+properties: Map<String, String> = emptyMap())`. The SDK sends nothing to any analytics service itself;
+if nobody collects the flow, the events are dropped (buffer of 8, no replay).
+
+**The set is identical on iOS and Android (SB-2440)** — same names, property keys and value formats.
+Every property value is a `String`; numbers are formatted locale-independently (`.` decimal
+separator, no grouping). Add your own context (device metadata, app state, user) before forwarding.
+
+**Every event carries `phone_epoch`** — the phone's wall-clock time, epoch **seconds**. The SDK stamps
+it with the emission time unless the event sets its own (listed in its row below: the removal, pairing
+and failure times, and the phone clock `device epoch updated` compared the band against).
+
+| Event | When | Properties |
+|---|---|---|
+| `device epoch updated` | the configure step found the band clock ≥ 5 s off the phone and rewrote it | `device_epoch` — band epoch before correction, **seconds** · `phone_epoch` — phone epoch, **seconds** · `delta_seconds` — `phone_epoch − device_epoch`, signed integer |
+| `device errored` | at most once per synced chunk containing diagnostic error packets | `error_type` — space-separated tokens, in this order, no leading/trailing space: `ble` `watchdog` `ppg` `imu_overflow` `algorithm_nan_in_accel_buffer` · `packet_bytes` — each error packet as uppercase space-separated hex bytes, packets joined by `", "` (e.g. `87 0B 07 0C 01, 87 0B 07 07 02`) · `epoch` — band timestamp of the latest packet in the batch, **seconds** |
+| `device sync failed` | the SDK NAKs a sync batch (intermediate or final) | `reason` — always present, see below · `intermediate` — `true` / `false` · `number_of_packets_recorded` — packets the band reported for this sync · `number_of_packets_synced` — packets received so far · `expected_sequence_number`, `received_wrong_sequence_number` — only when `reason = out_of_sequence` |
+| `device synced` | after a successful sync drain, throttled: only if more than 5 min have passed since the last emission's anchor. Counters accumulate between emissions and reset after each one; the anchor only advances on a non-intermediate sync. In-memory (not persisted) | `packet_count` — packets synced since the last emission · `number_of_syncs` — syncs since the last emission · `sync_duration` — accumulated seconds, exactly 2 decimals (e.g. `12.34`) |
+| `device removed` | the host removed the paired band through the SDK (`removeDeviceFromPairedDevices`); captured before the teardown | `serial_number` — the removed band's serial (`""` if never read) · `phone_epoch` — time of the removal, **seconds** |
+| `device paired` | once per new pairing through the SDK's pairing flow (`pairingState` → `Paired`) — never on a reconnect of an already-paired band. Sent once the band's serial and firmware version are both known (normally at once, since pairing configures the band; otherwise on the first configuration after it). In-memory: a pair whose report is still waiting when the app is killed is not reported | `serial_number` — band serial · `firmware_version` — as `firmwareVersion` publishes it · `phone_epoch` — when the pairing completed, **seconds** |
+| `device firmware update failed` | an `updateFirmware` call failed — once per call, just before it throws `SB_FirmwareUpdateError` (which is unchanged) | `reason` — see below · `current_version` — band firmware when the update started (`""` if unknown) · `attempted_version` — the version being installed: known when the bytes are the image the SDK's own `getFirmware` returned (internal builds), else `""` · `phone_epoch` — time of the failure, **seconds** |
+| `device firmware update successful` | an `updateFirmware` call succeeded — once per call. Sent after the band reboots and reconnects, so `new_version` is what the band itself reports; if it isn't back within 5 minutes, sent then with the installed version | `old_version` — band firmware before the update · `new_version` — the version the band reports after its reboot, else the installed version (`""` if the SDK didn't know it) |
+| `sleep recording uploaded to server successful` | the sleep upload RPC returned OK (including when the server flagged the sleep spurious) | `sleep_end_epoch` — sleep end, **milliseconds** |
+
+`device sync failed` `reason` values:
+
+| `reason` | Meaning | Platforms |
+|---|---|---|
+| `out_of_sequence` | a batch's sequence number wasn't the previous one + 1 (skipped, duplicated or replayed); the band re-sends from its last ack | both |
+| `store_write_failed` | persisting the batch failed, so it was NAK'd to keep it on the band | both |
+| `store_in_memory` | the SwiftData store fell back to in-memory | iOS only |
+| `unknown` | any other NAK | reserved — Android never NAKs for another cause today |
+
+`device firmware update failed` `reason` values. When the band / Bluetooth layer reported an OTA status,
+`reason` is that status's name, lowercased (the same list on iOS):
+
+| `reason` | Meaning |
+|---|---|
+| `crc_error` | the band rejected the image's CRC |
+| `invalid_header_info` | the band rejected the image header |
+| `invalid_packet_length` | the band rejected a packet's length |
+| `insufficient_buffer` | the band ran out of buffer |
+| `unknown_error` | the band reported an unknown error, or sent a response the Bluetooth layer couldn't parse |
+| `status_max` | the band reported the out-of-range "max" status |
+| `app_cancel` | the transfer was cancelled — on Android this is also what a link lost mid-flash and the transfer's 5 s no-response watchdog report |
+| `app_not_enough_data` | the image file is too short to be a firmware image |
+| `app_missing_objects` | the phone's Bluetooth objects for the transfer were missing |
+| `app_missing_file` | the image file couldn't be opened |
+| `app_missing_device` | no device to transfer to |
+| `app_existing_ota` | the band holds an incomplete earlier update (the SDK resets the band and retries once before reporting this) |
+
+Otherwise an SDK-level code:
+
+| `reason` | Meaning | Platforms |
+|---|---|---|
+| `not_connected` | no band connected when `updateFirmware` was called | both |
+| `not_configured` | the band reported it isn't configured | both |
+| `unknown` | any other error, including a cancelled calling coroutine | both |
+
+**Not emitted (removed in SB-2440):** `recording started` / `recording ended` (the host knows when it
+starts and ends a recording — fire your own), `user consent given` (fire your own when the user
+accepts), `device in foreground connected`, and the old name `device sync failed due to missing
+sequence number` (now `device sync failed`).
+
+Related domain signals are separate flows, not analytics events: `syncCompleted`,
+`hrSyncFinishedForActivity`, `sleepUploaded`, `deviceReset` and `latestBookend`
+(§3.2 table).
+
 ### 3.3 Recording control (suspend, on the facade)
 
 | Member | Signature | Notes |
@@ -422,9 +493,18 @@ sealed interface SB_PairingState {
 }
 
 enum class SB_PairingFailure {
-    ScanTimeout, ConnectTimeout, ConnectionLost, NotConfirmed, DeviceUnavailable
+    ScanTimeout, ConnectTimeout, ConnectionLost, NotConfirmed, DeviceUnavailable, BluetoothOff
 }
 ```
+
+| `SB_PairingFailure` | Meaning |
+|---|---|
+| `ScanTimeout` | no pair-eligible band was found within the scan window |
+| `ConnectTimeout` | the BLE link to the selected band never came up |
+| `ConnectionLost` | the band disconnected after connect, before the pair completed |
+| `NotConfirmed` | the band connected, but the user never pressed its button within the confirmation window |
+| `DeviceUnavailable` | `selectDevice` was called with an id that isn't in the current `Scanning` payload |
+| `BluetoothOff` | the phone's Bluetooth adapter is off, so no scan was started. Reported **immediately** from `beginPairing()`, not after the scan window |
 
 Render the state; make three calls:
 
@@ -452,6 +532,30 @@ acknowledging the press, and refusing a late press once the window closes); pers
 registration including the device-type wire mapping; configuring the band over the link that is already
 up; suppressing BLE auto-reconnect so a previously-paired band can't steal the link mid-pair; and every
 timeout — scan, connect, confirm, and a configure backstop.
+
+**Handling Bluetooth off.** `beginPairing()` checks the real adapter state before it scans. With the
+adapter off it starts no scan and publishes `Failed(BluetoothOff)` straight away, instead of scanning an
+empty list for the whole scan window and then reporting `ScanTimeout`. The SDK never shows a dialog or
+turns Bluetooth on itself; the host asks the user, then opens a fresh transaction:
+
+```kotlin
+private val enableBluetooth =
+    registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) SensorBioSDK.beginPairing()
+    }
+
+// in the pairingState collector:
+is SB_PairingState.Failed -> if (state.reason == SB_PairingFailure.BluetoothOff) {
+    SensorBioSDK.endPairing()
+    enableBluetooth.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))  // needs BLUETOOTH_CONNECT on API 31+
+} else {
+    showCantReachBand(state.reason)
+}
+```
+
+Close the failed transaction with `endPairing()` before retrying, as above. `pairingState` is a
+`StateFlow`, so a `beginPairing()` over a still-published `Failed(BluetoothOff)` while Bluetooth is still
+off publishes an equal value, and a collector never sees it: the retry looks like it did nothing.
 
 The host keeps what is genuinely host-side: the **runtime Bluetooth permissions** (§1.1 — the SDK scans,
 it never asks for the grant), which screen to show, analytics, and any cosmetic hold or countdown.
@@ -481,7 +585,7 @@ all-set screen.
 | `reset` | `() -> Unit` | factory-reset the device |
 | `userLED` | `suspend (red=…, green=…, blue=…, blink=…, seconds: Int)` | LED control (awaits the BLE write) |
 | `hapticMotor` | `suspend (pulse: Boolean = false, intensity: Int, seconds: Int)` | run the haptic motor (awaits the BLE write). `pulse` = pulse vs. solid (haptic analogue of `blink`); `intensity` is 0..100% |
-| `updateFirmware` / `setFirmwareUpdateDeviceId` | `suspend (url, delay?, size?)` **or** `suspend (data: ByteArray, delay?, size?)` *(throws `SB_FirmwareUpdateError(canRetry)`)* / `(deviceId: String?)` | firmware flash — `url` = a local file, or pass `data` = the bytes from `getFirmware` (SDK temp-files them internally); progress on the `firmwareProgress` event (§3.2). `setFirmwareUpdateDeviceId` is the session-guard seam |
+| `updateFirmware` / `setFirmwareUpdateDeviceId` | `suspend (url, delay?, size?)` **or** `suspend (data: ByteArray, delay?, size?)` *(throws `SB_FirmwareUpdateError(canRetry)`)* / `(deviceId: String?)` | firmware flash — `url` = a local file, or pass `data` = the bytes from `getFirmware` (SDK temp-files them internally); progress on the `firmwareProgress` event (§3.2). Each call reports `device firmware update failed` or `device firmware update successful` on `analyticsEvents` (§3.2.3). `setFirmwareUpdateDeviceId` is the session-guard seam |
 | `updateConnectedDeviceFirmware` | `(packet: SB_FirmwareVersionPacket) -> Unit` | apply a resolved firmware-version packet to the connected device |
 | `migrateDeviceTypeAfterFlash` | `() -> Unit` | call after a flash completes: if the device was an Alter/AlterV2 migrated onto Sensr firmware, rewrite its stored type to the Sensr equivalent + re-register so the forced-update gate stops re-firing on reconnect. No-op for a same-type flash |
 | `setAskForDeviceResponse` | `(enable: Boolean) -> Unit` | device button-tap prompting. **Not needed for pairing** — `beginPairing` runs the LED/haptic confirmation and the button listening itself; reach for this (and `userLED` / `hapticMotor`) only for your own device interactions outside a pair |
@@ -512,7 +616,7 @@ all-set screen.
 | `remoteGlobals` | `SB_RemoteGlobals` | goals/branding globals |
 | `rawDataEnabled` | `val Boolean` | whether raw sensor logging is active (sensor-config raw channel or legacy `rawSensorDataLogging`); raw logging fills device storage faster, so the host shortens its "haven't synced" reminder (armed off §3.2 `syncCompleted`) when true |
 | `attachRemoteGlobals(owner)` / `refreshGlobalState()` | — / `suspend (): SB_OrgMembership` | globals lifecycle auto-refresh / manual refresh returning org membership |
-| `deviceId` | `val String` | SDK-owned stable per-install id (generated + persisted in `sdk_prefs`); read-only — the host reads it only to tag its own analytics with the same id |
+| `deviceId` | `val String` | SDK-owned stable per-install id (generated + persisted in `sdk_prefs`; survives `clearPrefsOnLogout`, changes only on reinstall / data clear); read-only — the host reads it only to tag its own analytics with the same id |
 | `clearLocalRecordingState()` | — | recording-state lifecycle |
 | `refreshUserAppSettings()` | `suspend (): SB_UserAppSettings` | force-refresh the app-settings backing the `userAppSettings` flow (§3.1) |
 
@@ -534,7 +638,7 @@ through the observable event streams (§3.2) — the host **observes**, it does 
   SCHEDULE/CANCEL requests, which armed off *connection* events rather than off a sync.
 - **A session that ended without the user asking** — observe `reauthenticationRequired`, run teardown, and route to login (§3.2.2). (`signOutComplete` was the old signal and is no longer emitted.)
 - **Lapsed device subscription** — observe `subscriptionLost`, sign out, and explain why (§3.2.1).
-- **Analytics** — observe `analyticsEvents` and forward them to your backend.
+- **Analytics** — observe `analyticsEvents` and forward them to your analytics provider (event set: §3.2.3).
 
 ---
 
@@ -544,8 +648,10 @@ Called directly on `SensorBioSDK.<method>(…)`. One-shot reads are `suspend fun
 
 | Domain | Methods (flat on `SensorBioSDK`) |
 |---|---|
-| Dashboard | `fetchDashboardData(date: Instant, tzOffset, forceRemote)`, `dashboardUpdates(date: Instant, tzOffset, forceRemote): Flow<SB_DashboardData>` *(stale-then-fresh stream — replaces the removed `cachedDashboardData` peek)*, `clearDashboardData(date: Instant)` |
+| Dashboard | `fetchDashboardData(date: Instant, tzOffset, forceRemote)`, `dashboardUpdates(date: Instant, tzOffset, forceRemote): Flow<SB_DashboardData>` *(stale-then-fresh stream — replaces the removed `cachedDashboardData` peek)*, `clearDashboardData(date: Instant)` *(`metricsList` also carries the SDK's own `STRESS_INDEX_DASH_METRIC` tile — see §5.9.1)* |
 | Skin temperature | `getSkinTemperature(date: Instant) -> SB_SkinTemperature?` *(on-device read — aggregates the local `temperature_data` rows for the calendar day into min/max/average + ascending points, all Celsius; no network; null when the day has no points. App applies °C/°F for display.)* |
+| Local-first dashboard | `getDashboardData(date: Instant) -> SB_DashboardData` *(SB-2422 — the same payload as `fetchDashboardData`, assembled on the device: rings from the local sleep / recovery / activity scores, tiles from the `get…Points` reads, plus the stress index tile from `getStressIndex` (§5.9.1). Never throws; a part it can't read is absent. No insights, sleep recommendation, SpO2 tile or metric footers.)* |
+| Continuous stress index | `getStressIndex(date: Instant) -> SB_StressIndexDay?`, `fetchStressIndex(date: Instant) -> SB_StressIndexDay?` *(SB-2229 — on-device and server reads of a day's stress index — see §5.9.1)* |
 | Local-first HR points | `getHRPoints(date: Instant) -> SB_HRDataPoints` *(local-first read — see §5.2)* |
 | Local-first HRV points | `getHRVPoints(date: Instant) -> SB_HRVDataPoints` *(local-first read — see §5.3)* |
 | Local-first RR points | `getRRPoints(date: Instant) -> SB_RRDataPoints` *(local-first read — see §5.4)* |
@@ -570,8 +676,52 @@ Called directly on `SensorBioSDK.<method>(…)`. One-shot reads are `suspend fun
 | Agreements | `shouldRequestAgreement`, `acceptAgreements(tosVersion, healthDataVersion)`, `acceptCurrentAgreements` *(suspend)* |
 | Account | `updateUserProfile(SB_UserProfileUpdate)`, `changePassword(currentPassword, newPassword)`, `requestPasswordReset`, `checkEmailAvailability`, `validateAccountRequirements(SB_ValidateAccountRequirementsRequest) -> SB_ValidateAccountRequirementsResult`, `refreshUser`, `hydrateSession`, `generateTemporaryAuthToken() -> String?`, `registerApp(deviceId)` |
 | Recording submit | `createActivitySession(activityName, startEpochMs, durationSecs)` *(suspend; manual after-the-fact log)* |
-| Session | `registerUser(userId, email?, sex?, birthdayYear?, birthdayMonth?, birthdayDay?, heightCm?, weightKg?, imperialUnits, activationCode?) -> SB_RegisterUserOutcome` *(SDK-key register-or-login; org creds come from `sdkCredentials` — see §5.1; this is the SDK's **only** registration path)*, `signOut()`, `persistUser`, `deleteAccount`, `clearSession`, `clearPrefsOnLogout` *(signed-in identity is observable — see §3.1 `session`/`userProfileFlow`)* |
+| Session | `registerUser(userId, email?, sex?, birthdayYear?, birthdayMonth?, birthdayDay?, heightCm?, weightKg?, imperialUnits, activationCode?) -> SB_RegisterUserOutcome` *(SDK-key register-or-login; org creds come from `sdkCredentials` — see §5.1; this is the SDK's **only** registration path)*, `signOut()`, `persistUser`, `deleteAccount`, `clearSession`, `clearPrefsOnLogout` *(`signOut`/`clearSession` cancel only the SDK's own WorkManager jobs; the host app's WorkManager work is left running; SB-2402)* *(signed-in identity is observable — see §3.1 `session`/`userProfileFlow`)* |
 
+
+#### Offline mode (SB-2422)
+
+An organization can turn on **offline mode** in its white-label settings when it does not want Sensor Bio holding its users' data. The SDK picks the setting up on its own, and while it is on:
+
+- **Nothing is uploaded.** Metrics from the band are still decoded and stored exactly as before, pending, but no upload work is enqueued: biometrics, activity, steps, temperature, sleep, recording submissions, surveys, workout edits, algorithm results, battery and last-sync telemetry. Upload jobs that carry a request file are kept on disk and held. When the organization turns offline mode off, the held jobs are re-enqueued and every upload type is flushed, so the backlog uploads.
+- **Raw device data packets are not stored**, and the band is told not to log raw sensor data (`isRawLoggingEnabled` reads `false`). The band is still acked.
+- **Server reads fail.** Every `fetch…` method and every `…Updates` flow throws `SB_OfflineModeException`, even when a cached copy exists — except the configuration reads still allowed below (`fetchGoals`). The on-device `get…` reads keep working, and never fall back to the server; `getDashboardData` builds the dashboard from them. Writes that go to the server (`addSleepSession`, `updateGoals`, profile updates, …) fail the same way.
+- **Still allowed:** sign-in and sign-up, token refresh, sign-out, account deletion, password change, agreements, the white-label settings fetch itself, reading goals, the enabled-algorithm list, and device linking / locked devices.
+
+```kotlin
+class SB_OfflineModeException : Exception("Unavailable in offline mode")
+```
+
+**Server reads land in the database (SB-2422, all orgs).** Separately from offline mode, every daily server read now also saves what it returns into the tables the `get…` reads use — not just the response cache — filling only what the phone is missing, any day including today: HR / HRV / RR per point, steps / calories per hour (only hours with no band rows), and sleep per night including its stage timeline. Band data is never overwritten or marked uploaded. A day viewed online is therefore readable — and scorable — on the device later, offline mode included.
+
+#### Sleep-write errors (SB-2424, SB-2427)
+
+`addSleepSession` and `modifySleepSession` throw `SB_SleepWriteError`:
+
+```kotlin
+sealed class SB_SleepWriteError(message: String) : Exception(message) {
+    object InsufficientData : SB_SleepWriteError(…)     // not enough band data in the window
+    object NeverAsleep : SB_SleepWriteError(…)          // band data, but none of it scored as sleep
+    object TimeInFuture : SB_SleepWriteError(…)         // onset or wake-up is in the future
+    object WakeUpNotAfterOnset : SB_SleepWriteError(…)  // wake-up is not after onset
+    object InvalidTimes : SB_SleepWriteError(…)         // onset or wake-up is missing (modify: or not ordered)
+    object SessionNotFound : SB_SleepWriteError(…)      // modify: no session at the given end coordinates
+    class ModifyFailed(val serverMessage: String) : SB_SleepWriteError(serverMessage) // modify: unrecognized code
+}
+```
+
+`addSleepSession` names each refusal separately. Before that it threw `InsufficientData` for all of
+them, and it still does for a refusal code the SDK doesn't recognize, so an existing
+`catch (e: SB_SleepWriteError.InsufficientData)` keeps working. A `when` over `SB_SleepWriteError`
+must cover the new subclasses. Same cases as iOS (SB-2423).
+
+`modifySleepSession` maps the server's refusal codes the same way (SB-2427): not enough data →
+`InsufficientData`, invalid times → `InvalidTimes`, no such session → `SessionNotFound`.
+`ModifyFailed` is now only the fallback for a code the SDK doesn't recognize; before SB-2427 it was
+thrown for every refusal, so a `catch (e: SB_SleepWriteError.ModifyFailed)` alone no longer sees the
+known codes. `serverMessage` is the server's unlocalized text — log it, don't show it. The `String`
+returned on success is the server's unlocalized status text too; show your own copy. None of the
+subclasses carry user-facing text: map each to your own localized string. Same cases as iOS (SB-2426).
 
 #### Brief surveys (SB-2177)
 
@@ -753,6 +903,11 @@ mint from is exactly what required your SDK Key to be on the device (SB-2095).
 
 The SDK does remember your `client_sdk_user_id` so you can name the user on the way back in. It is
 an identifier, not a credential — worthless without a fresh token — and `signOut()` erases it.
+
+**`signOut()` returns once the user's local data is gone.** It awaits the SDK's on-device data
+wipe, so the next user to sign in can never read the previous user's records. If that wipe fails, the
+SDK retries it before the database is next read: at the next launch, or before the next sign-in.
+Nothing is required from your app.
 
 **What is transparent to your app, and what is not:**
 
@@ -1001,6 +1156,8 @@ data class SB_CaloriesHourBucket(
 
 `null` when neither the device nor the server has sleep for the day.
 
+**A night the band recorded in pieces is one session (SB-2437).** The band often ends a sleep on a wake and starts another when the user settles again; the server joins those into one sleep, and so do the local reads, with the server's rules: sleeps that overlap or sit **less than 60 minutes apart** are merged when they end on the same date (in the sleep's own offset), and when a date's first sleep starts before 01:00 the previous date's last sleep can join it too (so a night split across midnight is one night, filed under the morning). The merged night keeps the first piece's start and onset and the last piece's wake-up; its `SB_SleepItem.end` is the last piece's end + 1 s, as on the server. Each gap between pieces counts as **awake** — in Total Awake, Awakenings, the score and the stage timeline — but, as on the server, not in the stage percentages. The resting HR / HRV, graphs and arm disturbances are read over the whole night, gaps included. This applies to every on-device sleep read — `getSleepDetail`, `getSleepSessions`, the graph and disturbance reads, `getDashboardData`, the local recovery score and the daily resting HR / HRV — and matters most in offline mode, where nothing reaches the server to be merged there. The `sleep_sessions` rows are not changed: each piece is still uploaded on its own and the server does its own merge. A `sessionEndTimestamp` that is one piece's wake-up resolves to the night containing it.
+
 The returned `SB_SleepDetailDay` is populated with what the device stores, **recomputed to match server-first exactly** (the server re-derives its stage metrics after upload, so the entity's own stored totals — summed over the full stage list — would not match):
 
 - **stage metrics** — the per-epoch stages are clamped to `[sleepOnset, wakeUp]` and re-counted (server `UpdateSleepDerivedMetricsUsingTimestampedStages`), so the leading sleep-latency awake and any trailing awake are excluded. Each stage's minutes are the epoch count divided by the device's epochs-per-minute with **integer truncation** (server `int32(count / multiplier)`), matching the server to the minute. This drives the four legend percentages (largest-remainder rounding), the per-stage duration tiles, `sleepTimeSec` = (light + deep + rem) × 60, and the in-window arousal count. The stage-timeline `intervals` are likewise the in-window epochs;
@@ -1152,6 +1309,121 @@ also drives the report chart's limit lines and y-axis, so dropping them left a g
 lines at all and an axis collapsed to the HR range, while the live chart for the same workout had shown
 five. A host that renders the breakdown as a list will now show five rows rather than only the zones
 reached.
+
+#### Which zone a row is: `SB_HRZone` (SB-2355) ⚠️ interface change
+
+The SDK identifies a heart-rate zone with an enum and **no display text**. What a zone is called, and
+its localization, is the host's job.
+
+```kotlin
+enum class SB_HRZone { BASELINE, ZONE_1, ZONE_2, ZONE_3, ZONE_4, ZONE_5 }
+// SB_HRZone.SCORED == listOf(ZONE_1, ZONE_2, ZONE_3, ZONE_4, ZONE_5)
+```
+
+- **Reports:** `SB_HRMExerciseZone.zone: SB_HRZone?` says which zone a time-in-zone row is. The
+  below-zone-1 row is `BASELINE`. `zone` is null only when the server sent a zone name this SDK doesn't
+  recognize. That row is kept so the times still add up, but it isn't any zone and shouldn't be
+  labelled or colored as one.
+- **Building a row:** `SB_HRMExerciseZone(zone = …, hexadecimalColor = …, …)`.
+- **Deprecated, kept for one release:** `SB_HREffortZone` and `SB_HRMExerciseZone.description`. These
+  carry the server's English names ("Warm up", "Fat Burn", …). Don't display them. Switch to `zone` and
+  your own strings.
+- **Stored reports** written by an earlier SDK keep working: `zone` is read from the stored name, so no
+  migration is needed.
+
+The server still sends the zone as an English name (`HRMExerciseZone.description` in `data.proto`).
+The SDK maps it to `SB_HRZone`, and nothing after that reads the string. iOS has the same type
+(`SB_HRZone`, `.baseline` / `.zone1`…`.zone5`).
+
+#### Below-warm-up time and the bar colours (SB-2356) ⚠️ behaviour change
+
+Every workout detail the SDK hands out — `fetchWorkoutDetail`, `localWorkoutDetail` and
+`activityReport`, whichever source built it — has its `exerciseZoneList` finished for display the same
+way. This only affects a list that has zones in it: an empty list stays empty.
+
+- **A last row, `zone == SB_HRZone.BASELINE`** (named `"Below warm up"` before SB-2355), holds the time spent under the first zone's floor, so the card adds
+  up to the whole workout. It is worked out from `SB_HRMData.dataPoints` against the list's own lowest
+  floor, using the same gap-to-previous rule the zones use. It also holds the workout time with no HR
+  reading at all, before the first sample and after the last one (SB-2404), so the rows add up to
+  `endTimestamp - timestamp`, the Session figure. That matters most for an auto-detected activity,
+  where HR can start minutes after the activity does. Its **`yAxisLimitChartValue` is `0`**
+  because it has no floor of its own. That is also how to tell it apart from a zone: **skip it when you
+  draw chart limit lines or work out the y-axis range**, or you get a line at 0 bpm.
+- **`hexadecimalColor` is the bar colour, not the zone's floor colour.** The HR chart pins each zone's
+  colour to that zone's floor and blends upward, so each band looks like the next zone up. The bars now
+  use that same colour: `BASELINE` `#979797`, `ZONE_1` `#00a7dc`, `ZONE_2` `#00ad67`, `ZONE_3`
+  `#fd8635`, and `ZONE_4` and `ZONE_5` both `#ee3e41`. A host that colours a chart gradient from this
+  field should switch to its own floor colours (`#979797` / `#00a7dc` / `#00ad67` / `#fd8635` /
+  `#ee3e41` from `ZONE_1` upward). Otherwise every band moves up one colour.
+- **`progressValue` is rescaled against the longest row, including Below warm up.** On an easy walk
+  that row is full length and the zones are short. The zone rows' `displayValue` and boundaries keep
+  their scored values; only the bar length and colour change.
+
+The zone *boundaries* and the five times the HR Zone algorithm uploads are unchanged.
+
+
+### 5.9.1 Continuous stress index (SB-2229) ⚠️ interface change
+
+The SDK calculates a continuous stress index on the device when the org has the
+`continuous_stress_index` algorithm enabled (`execution_location = mobile_sdk`): one point per PPG block
+(every 5 minutes by default), from the 10 minutes of beats ending there, uploaded by the SDK itself. The
+value has no unit; higher means more stress. Two new things reach the host: a dashboard tile and two
+day reads. Both were `src/internal` before this change and are now in the customer AAR.
+
+**Dashboard tile.** `SB_DashboardMetricType.STRESS_INDEX_DASH_METRIC` is new. The server's
+`DashboardMetricType` has no stress value and `GetDashboard` has no stress field, so the SDK adds the tile
+itself, last in `SB_DashboardData.metricsList`, on every dashboard read: `fetchDashboardData`,
+`dashboardUpdates` (both emissions) and the offline `getDashboardData`.
+
+```kotlin
+val stress = data.metricsList.firstOrNull { it.metricType == SB_DashboardMetricType.STRESS_INDEX_DASH_METRIC }
+// null = no stress data for the day; else stress.valueFloat is the day's latest reading
+```
+
+- `valueFloat` is the day's latest reading (`SB_StressIndexDay.latest.value`); `value` is it rounded,
+  `title` is `"STRESS INDEX"`, `valueUnit` is empty, and the rest is defaulted (no average, footer or
+  baseline).
+- **No tile means no data.** A day with no readings has no stress entry, and neither does a dashboard
+  while the algorithm is off for the org (unless forced in Developer Tools): the same gate that runs
+  the calculator.
+- **Source.** Today, on `fetchDashboardData` and the authoritative `dashboardUpdates` emission:
+  `fetchStressIndex`, falling back to `getStressIndex` when it throws or returns null (the server only
+  has a point once the phone has uploaded it). Any other day: `getStressIndex`. Offline mode
+  (`getDashboardData`): `getStressIndex` only. The stress read runs alongside the dashboard read, and its
+  failure never fails the dashboard: the tile is just absent.
+- **Cache.** The tile is never stored in the dashboard response cache, which keeps the server's payload
+  only; the SDK adds it after that read, on every emission. The `dashboardUpdates` cache pre-paint
+  carries the tile from `getStressIndex` (on device, no network), so it shows the device's current value
+  rather than a stale or missing tile, and the authoritative emission then carries today's server value.
+
+**Day reads.** Both return the same `SB_StressIndexDay`, null for a day with no readings.
+
+```kotlin
+suspend fun getStressIndex(date: Instant): SB_StressIndexDay?    // on device; never a network call, never throws
+suspend fun fetchStressIndex(date: Instant): SB_StressIndexDay?  // the server's day (GetStressIndex); throws the gRPC error
+
+data class SB_StressIndexDay(
+    val latest: Point,           // newest reading, the dashboard value
+    val min: Double,
+    val max: Double,
+    val sleepAverage: Double?,   // mean of ASLEEP points; null if none
+    val daytimeAverage: Double?, // mean of AWAKE points; null if none
+    val points: List<Point>,     // oldest first; never empty
+) {
+    data class Point(val epoch: Long /* unix ms */, val value: Double, val type: SB_HRPointType)
+}
+```
+
+`points` are tagged `ASLEEP` / `AWAKE` against the same day window and sleeps as `getHRPoints(date)`, and the
+five values are calculated by the SDK from the non-zero points (SB-2417), whichever read produced them: the
+server's own stats are not used. Zeros are never readings (bioedge declining to score a window) and never
+appear. `getStressIndex` uses the HR day: midnight to midnight plus the full span of every sleep that
+ended on it. `fetchStressIndex` uses the calendar day in each point's own offset, so it leaves out last
+night's pre-midnight points. Every fetched point is written to the local store as `UPLOADED`, so it is never
+sent back up and a later `getStressIndex` of that day has it; a point already stored keeps its value.
+`fetchStressIndex` throws when signed out or when the call fails. For today, fall back to `getStressIndex`
+when it throws or returns null; for an earlier day, `getStressIndex` is enough. The dashboard tile already
+does this.
 
 ---
 
@@ -1312,7 +1584,9 @@ type and no state machine for a host to reproduce, because a detection is only p
   during a manual recording, so the same minutes can arrive twice, and the user's own recording wins.
 
 A detection failing any of those is simply absent. Ones from an earlier day are retired
-automatically (there is nowhere left to answer them), as are ones already answered.
+automatically (there is nowhere left to answer them) the moment the calendar day changes, and the
+flow re-emits without them — a host showing the card on "today" needs no date filter of its own.
+Ones already answered are retired too.
 
 Both of the first two conditions matter, and the first is not redundant: every "is it all uploaded?"
 count is zero for a window holding no rows, and a window the band has not sent yet holds none — so
@@ -1559,7 +1833,7 @@ Read it as a worked example of the request, the response, and what the app does 
   `SB_RecordingSession`, `SB_RecordingInfo`, `SB_RecordingCustomization`, `SB_PersistedRecording`, `SB_ActiveRecordingInfo`,
   `SB_RecordingError`, `SB_RawSensorDataLogging`, `SB_SpotCheckDetails`,
   `SB_SubmitFinishedRecordingResult`, `SB_LatestBookend`, `SB_BiometricRecordResult`,
-  `SB_ExerciseZoneAttributes` / `SB_HREffortZone`.
+  `SB_ExerciseZoneAttributes` / `SB_HRZone` (`SB_HREffortZone` deprecated, SB-2355).
 - **Sleep** — `SB_SleepItem`, `SB_SleepDetailDay`, `SB_SleepDetailAggregated`, `SB_SleepStages`,
   `SB_SleepStage`, `SB_SleepBiometrics`, `SB_SleepScore`(+factors/penalties/sections), `SB_SleepPosition`,
   `SB_SleepDisturbances`, `SB_SleepApneaInfo`, `SB_SleepAccounting`, `SB_SleepDebt*`, `SB_SleepMetric`,
@@ -1586,6 +1860,7 @@ Read it as a worked example of the request, the response, and what the app does 
   `SB_EcgSample` (§3.2); `SB_LiveMetric`; `SB_HRMData`(+`SB_HRMCategory`); `SB_TimeValuePoint`, `SB_DateValuePoint`,
   `SB_BarGraph`, `SB_CalorieMetric`, `SB_CaloriesTrending`, `SB_CardioStats`;
   `SB_SkinTemperature`(+`SB_SkinTemperature.Point`) — on-device day summary from `getSkinTemperature(date)`, all Celsius.
+  `SB_StressIndexDay`(+`SB_StressIndexDay.Point`; reuses `SB_HRPointType`) — a day's continuous stress index from `getStressIndex(date)` / `fetchStressIndex(date)` (§5.9.1): points plus SDK-calculated `latest`/`min`/`max`/`sleepAverage`/`daytimeAverage`.
   `SB_HRDataPoints`(+`SB_HRDataPoint`, `SB_HRPointType{AWAKE,ASLEEP}`) — local-first day HR from `getHRPoints(date)` (§5.2); the container computes `averageHR`/`lowestHR`/`highestHR` on the fly and carries a stored `restingHR` (all nullable, never a misleading 0).
   `SB_HRVDataPoints`(+`SB_HRVDataPoint`; reuses `SB_HRPointType`) — local-first day HRV from `getHRVPoints(date)` (§5.3); the container computes `averageHRV`/`lowestHRV`/`highestHRV` on the fly and carries a stored `restingHRV` (all nullable, never a misleading 0).
   `SB_RRDataPoints`(+`SB_RRDataPoint`; reuses `SB_HRPointType`) — local-first day RR from `getRRPoints(date)` (§5.4); the container computes `averageRR`/`lowestRR`/`highestRR` on the fly and carries a stored `restingRR` (all nullable, never a misleading 0).

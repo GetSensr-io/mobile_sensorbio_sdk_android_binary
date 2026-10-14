@@ -210,4 +210,6 @@ private fun SB_PairingFailure.message(): String = when (this) {
         "No button press was registered in time. Try again and press the device's button."
     SB_PairingFailure.DeviceUnavailable ->
         "That device is no longer available. Search again."
+    SB_PairingFailure.BluetoothOff ->
+        "Bluetooth is off. Turn it on and try again."
 }
