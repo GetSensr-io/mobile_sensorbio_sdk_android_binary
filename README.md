@@ -36,11 +36,11 @@ dependencyResolutionManagement {
 
 ```kotlin
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:3.3.0")
+    implementation("com.sensorbio:sensorbio-sdk:4.0.0")
 }
 ```
 
-(Groovy DSL is equivalent: `maven { url '…' }` + `implementation 'com.sensorbio:sensorbio-sdk:3.3.0'`.)
+(Groovy DSL is equivalent: `maven { url '…' }` + `implementation 'com.sensorbio:sensorbio-sdk:4.0.0'`.)
 
 ## What you get
 
@@ -125,6 +125,23 @@ See [`com/sensorbio/sensorbio-sdk/maven-metadata.xml`](com/sensorbio/sensorbio-s
 `SDK_INTERFACE.md` documents the public surface as of each release.
 
 ## Release notes
+
+### v4.0.0 — October 14, 2026
+
+This release breaks the integration in several places. An app built against
+3.3.0 may not compile against it without the changes below. It also contains
+everything from 3.4.0, which was not published separately.
+
+- **Heart-rate zones are identified by `SB_HRZone`, with no display text.** `SB_HRMExerciseZone.zone` says which zone a row is (`BASELINE`, `ZONE_1` … `ZONE_5`), and rows are built with `zone = …`. `SB_HREffortZone` and `SB_HRMExerciseZone.description` are deprecated and will be removed in the next release. They carry the server's English names, so show your own localized zone names instead.
+- **A workout's zone list now adds up to the whole workout.** A last `BASELINE` row holds the time below zone 1 plus any time with no heart-rate reading. Its `yAxisLimitChartValue` is `0`, so skip it when you draw chart limit lines or work out the y-axis range. `hexadecimalColor` is now the bar colour, matching the heart-rate chart, not the zone's floor colour. If you colour a chart gradient from it, use your own floor colours.
+- **`userAppSettings` is never null.** It is now `StateFlow<SB_UserAppSettings>` and holds the defaults until the settings load, and again after sign-out. Remove your null handling.
+- **Exhaustive `when` expressions need new cases.** `SB_PairingFailure.BluetoothOff` is reported straight away from `beginPairing()` when Bluetooth is off, instead of `ScanTimeout` after the scan window. Ask the user to turn Bluetooth on, call `endPairing()`, then `beginPairing()` again. `SB_SleepWriteError` gains `NeverAsleep`, `TimeInFuture`, `WakeUpNotAfterOnset`, `InvalidTimes` and `SessionNotFound`, and `addSleepSession` and `modifySleepSession` now name each refusal. `modifySleepSession` throws `ModifyFailed` only for a refusal the SDK doesn't recognize, so catching `ModifyFailed` alone no longer sees the known ones.
+- **Analytics events are now the same on iOS and Android.** Same names, property keys and value formats, every value a `String`, and every event carries `phone_epoch`. `recording started`, `recording ended`, `user consent given` and `device in foreground connected` are no longer sent, so fire your own. `device sync failed due to missing sequence number` is now `device sync failed`, with a `reason`. The full set is in `SDK_INTERFACE.md` §3.2.3.
+- **Continuous stress index.** When your organization enables the algorithm, the SDK calculates a stress index on the device and uploads it. The new `getStressIndex(date)` and `fetchStressIndex(date)` return an `SB_StressIndexDay`. Dashboard reads add a `STRESS_INDEX_DASH_METRIC` tile, a new `SB_DashboardMetricType` value, when the day has readings.
+- **Offline mode.** An organization can turn on offline mode in its white-label settings. Nothing is uploaded, and server reads throw `SB_OfflineModeException`, while the on-device `get…` reads keep working. Read the setting with `isOfflineMode` or `offlineModeFlow`. The new `getDashboardData(date)` builds the dashboard on the device.
+- **A night the band recorded in pieces is one sleep.** Sleeps that overlap or sit less than 60 minutes apart are merged in the on-device reads, the same way the server merges them.
+- **`signOut()` returns once the user's local data is gone**, so the next user to sign in can never see it. It now cancels only the SDK's own background jobs, not your app's WorkManager work.
+- **Fixes:** a crash on Samsung Android 10 devices, "No firmware image" for every Sensr V1 band, and a crash when the band dropped mid-sync. Band data recorded before the account was created is no longer uploaded, yesterday's detected activities clear at midnight, and the push device ID survives sign-out.
 
 ### v3.3.0 — September 24, 2026
 

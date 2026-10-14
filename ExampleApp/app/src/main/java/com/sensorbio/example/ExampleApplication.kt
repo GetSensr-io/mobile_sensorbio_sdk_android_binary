@@ -4,12 +4,17 @@ import android.app.Application
 import android.util.Log
 import com.sensorbio.sensorbiosdk.SensorBioSDK
 import com.sensorbio.sensorbiosdk.datatypes.SB_Environment
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.launch
 
 /**
  * The required SDK init pattern. Mirrors the iOS sample's `@main` init:
  * `initialize` once, then set the environment + a log sink.
  */
 class ExampleApplication : Application() {
+    /** Process-lifetime scope for app-wide SDK collectors. */
+    private val appScope = MainScope()
+
     override fun onCreate() {
         super.onCreate()
 
@@ -33,6 +38,16 @@ class ExampleApplication : Application() {
         // The SDK does not log itself — the host routes its log stream wherever it wants.
         SensorBioSDK.logHandler = { level, message, _ ->
             Log.d("SensorBioSDK", "[$level] ${message ?: ""}")
+        }
+
+        // SDK telemetry. The SDK never talks to an analytics service itself — it publishes events
+        // (same names + properties on iOS and Android; see SDK_INTERFACE.md §3.2.3) and the host
+        // forwards them to its own analytics provider. Collect for the whole process so none are
+        // missed; here we just log each one.
+        appScope.launch {
+            SensorBioSDK.analyticsEvents.collect { event ->
+                Log.i("SensorBioAnalytics", "${event.name} ${event.properties}")
+            }
         }
     }
 }
