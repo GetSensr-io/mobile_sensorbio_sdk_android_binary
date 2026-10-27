@@ -36,11 +36,11 @@ dependencyResolutionManagement {
 
 ```kotlin
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:4.0.0")
+    implementation("com.sensorbio:sensorbio-sdk:4.1.0")
 }
 ```
 
-(Groovy DSL is equivalent: `maven { url '…' }` + `implementation 'com.sensorbio:sensorbio-sdk:4.0.0'`.)
+(Groovy DSL is equivalent: `maven { url '…' }` + `implementation 'com.sensorbio:sensorbio-sdk:4.1.0'`.)
 
 ## What you get
 
@@ -125,6 +125,56 @@ See [`com/sensorbio/sensorbio-sdk/maven-metadata.xml`](com/sensorbio/sensorbio-s
 `SDK_INTERFACE.md` documents the public surface as of each release.
 
 ## Release notes
+
+### v4.1.0 — October 27, 2026
+
+**Breaking changes**
+
+- **The meditation score is removed.** `SB_MeditationGraph` no longer has
+  `score`, `scoreFactors` or `scorePenalty`, and the `SB_MeditationScore`,
+  `SB_MeditationScoreFactor`, `SB_MeditationScorePenalty` and
+  `SB_MeditationProcessState` types are gone. Delete any code that reads
+  them. The HR and HRV trend lines are unchanged.
+- **`SB_SkinTemperature.Point` has a required `type`.** Skin-temperature and
+  SpO2 points now carry an `SB_HRPointType` `ASLEEP` / `AWAKE` tag. If you
+  build `SB_SkinTemperature.Point` yourself, pass `type`. Skin temperature's
+  day now runs midnight to midnight plus any sleep that ended that day, so
+  its min, max and average can include last night's sleep.
+
+**New**
+
+- **On-device SpO2.** `getSpO2(date)` returns the day's SpO2 from the
+  device, or `null` for a day with none. `getDashboardData` now fills the
+  SpO2 tile.
+- **Temperature trending.** `fetchDailyTemperature(date)` returns a day's
+  temperature from the server, and `fetchRangeTemperature(date, granularity)`
+  returns the week, month or year as nightly sleep and whole-day series.
+- **`getSkinTemperature(date)` fills in missing days.** When the device has
+  no temperature for a day, it now fetches that day from the server, stores
+  it and returns it. The signature is unchanged.
+- **New analytics event `sleep recording upload failed`**, with a `reason`,
+  sent when a sleep recording is dropped.
+- **Local data older than 90 days is removed** from the device, at most
+  once a day. The first run also compacts the database.
+
+**Fixes**
+
+- A recording the server rejects is now marked failed, with the reason,
+  instead of uploaded. A rejected spot check emits `biometricRecordResult`
+  with the error set.
+- A finished recording is submitted once, so the user gets one
+  "processing complete" notification instead of several.
+- Ending a recording while paused finishes straight away instead of after
+  60 seconds.
+- Band data is confirmed to the band only after it is stored, so a crash
+  can no longer lose it.
+- Stress index for past days now loads from the server and is tagged
+  against that day's sleep.
+- Editing a synced activity's calories or duration now updates its stored
+  report.
+- Packet uploads keep their pending flag after a failed upload, and a batch
+  that crosses midnight is filed under the right days.
+- Heart-rate zones are ordered by the server's zone number.
 
 ### v4.0.0 — October 14, 2026
 
