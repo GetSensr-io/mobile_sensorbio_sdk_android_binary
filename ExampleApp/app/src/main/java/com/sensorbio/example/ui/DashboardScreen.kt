@@ -40,7 +40,7 @@ import java.time.Instant
 // concern and lives on Profile with pairing.
 private val SUMMARY_ORDER = listOf(MetricKind.ACTIVITY, MetricKind.RECOVERY, MetricKind.SLEEP)
 private val METRIC_ORDER = listOf(
-    MetricKind.HEART_RATE, MetricKind.HRV, MetricKind.RESPIRATORY_RATE,
+    MetricKind.HEART_RATE, MetricKind.HRV, MetricKind.RESPIRATORY_RATE, MetricKind.SKIN_TEMPERATURE,
     MetricKind.STEPS, MetricKind.CALORIES,
 )
 

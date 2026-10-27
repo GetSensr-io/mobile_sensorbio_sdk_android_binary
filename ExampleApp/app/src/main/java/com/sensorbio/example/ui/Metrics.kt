@@ -2,9 +2,11 @@ package com.sensorbio.example.ui
 
 import com.sensorbio.sensorbiosdk.SensorBioSDK
 import com.sensorbio.sensorbiosdk.datatypes.SB_BiometricPoint
+import com.sensorbio.sensorbiosdk.datatypes.SB_HRPointType
 import com.sensorbio.sensorbiosdk.datatypes.SB_SleepMetricValue
 import com.sensorbio.sensorbiosdk.datatypes.SB_StepMetric
 import com.sensorbio.sensorbiosdk.datatypes.SB_StepMetricType
+import com.sensorbio.sensorbiosdk.datatypes.SB_TemperatureTrendingGraph
 import com.sensorbio.sensorbiosdk.datatypes.SB_ValueUnitWrapper
 import com.sensorbio.sensorbiosdk.datatypes.SB_ViewGranularity
 import java.time.Instant
@@ -13,11 +15,12 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlin.math.abs
 
-/** The seven dashboard metrics, each with a tappable detail view. */
+/** The dashboard metrics, each with a tappable detail view. */
 enum class MetricKind(val title: String) {
     HEART_RATE("Heart Rate"),
     HRV("Heart Rate Variability"),
     RESPIRATORY_RATE("Respiratory Rate"),
+    SKIN_TEMPERATURE("Skin Temperature"),
     STEPS("Steps"),
     CALORIES("Calories"),
     ACTIVITY("Activity"),
@@ -59,6 +62,12 @@ private val hmUtc = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.of("UTC
 private fun timeLabel(ms: Long): String =
     runCatching { hmUtc.format(Instant.ofEpochMilli(ms)) }.getOrDefault(ms.toString())
 
+// `SB_SkinTemperature.Point.epoch` is a real epoch (ms), so it renders in the device zone.
+private val hmLocal = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault())
+
+private fun localTimeLabel(ms: Long): String =
+    runCatching { hmLocal.format(Instant.ofEpochMilli(ms)) }.getOrDefault(ms.toString())
+
 // `SB_DateValuePoint.date` is packed YYYYMMDD (e.g. 20260515).
 private fun dateLabel(packed: Int, grain: Grain): String {
     if (packed in 19000101..29991231) {
@@ -71,6 +80,8 @@ private fun dateLabel(packed: Int, grain: Grain): String {
 }
 
 private fun unitLabel(value: Float, unit: String) = "${value.toInt()} $unit".trim()
+
+private fun celsius(value: Float) = "%.1f °C".format(value)
 
 /** Merge a metric's separate sleep + daytime point lists into one chronological, sleep/wake-tagged table. */
 /**
@@ -163,6 +174,34 @@ suspend fun loadMetric(kind: MetricKind, date: Instant, grain: Grain): MetricDat
                     "Highest" to "${g.highest.toInt()} brpm", "Baseline" to "${g.baseline.toInt()} brpm"),
                 listOf(MetricSection("BRPM", null,
                     g.brpmPoints.sortedBy { it.date }.map { DataPoint(dateLabel(it.date, grain), "${it.value.toInt()} brpm") })),
+            )
+        }
+
+    // Celsius from the SDK; a real app converts to the user's unit. A null baseline is not established yet.
+    MetricKind.SKIN_TEMPERATURE ->
+        if (grain == Grain.DAY) {
+            val d = SensorBioSDK.fetchDailyTemperature(date).takeIf { it.points.isNotEmpty() } ?: return noData()
+            MetricData(
+                celsius(d.average),
+                listOf("Average" to celsius(d.average), "Lowest" to celsius(d.lowest),
+                    "Highest" to celsius(d.highest), "Latest" to celsius(d.latest),
+                    "Baseline" to (d.baseline?.let(::celsius) ?: "—"),
+                    "Sleep average" to (d.sleepAverage?.let(::celsius) ?: "—")),
+                listOf(MetricSection("Readings", null, d.points.map {
+                    DataPoint(localTimeLabel(it.epoch), celsius(it.value),
+                        tag = if (it.type == SB_HRPointType.ASLEEP) "Sleep" else "Awake")
+                })),
+            )
+        } else {
+            val r = SensorBioSDK.fetchRangeTemperature(date, grain.sdk)
+            fun series(name: String, g: SB_TemperatureTrendingGraph) = MetricSection(name,
+                "Average ${celsius(g.average)}",
+                g.graph.mainPoints.sortedBy { it.date }.map { DataPoint(dateLabel(it.date, grain), celsius(it.value)) })
+            MetricData(
+                celsius(r.daily.average),
+                listOf("Daily average" to celsius(r.daily.average), "Sleep average" to celsius(r.sleep.average),
+                    "Baseline" to (r.daily.baseline?.let(::celsius) ?: "—")),
+                listOf(series("Sleep", r.sleep), series("Daily", r.daily)),
             )
         }
 

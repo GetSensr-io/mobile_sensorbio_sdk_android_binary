@@ -12,7 +12,7 @@ This document describes the **public** customer-facing surface of the SensorBio 
 
 > **Visibility note.** This covers the customer-facing API only. SDK-internal symbols and first-party
 > (`internal`-flavor) API are not part of the published binary and are not documented in the customer
-> copy. SDK `version = "3.4.0"`.
+> copy. SDK `version = "4.1.0"`.
 
 > **Backend guide.** Registration needs one endpoint on your own server, which mints the single-use
 > SDK token your app hands to the SDK. [§6](#6-minting-sdk-tokens--your-backend) is the guide for
@@ -41,7 +41,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:4.0.0")
+    implementation("com.sensorbio:sensorbio-sdk:4.1.0")
 }
 ```
 
@@ -112,6 +112,7 @@ App identity is set-once config passed into `initialize(context)`; every field o
 
 **Set `SB_AppConfig.environment` if you target anything but production.** `initialize` starts authenticated network activity of its own — the foreground credential check, the connectivity drain, the stale-submission sweep, and the white-label fetch — so the environment has to be known *before* it runs, not assigned afterwards. Assigning `SensorBioSDK.environment` after `initialize` returns leaves those first calls pointed at the default (`PRODUCTION`); against a staging session the server rejects the token and the 401 path ends the session (SB-2179). The `SensorBioSDK.environment` setter remains for hosts that switch at runtime, and rebuilds the channel when it does. `SB_AppType`/`appFlavor` are gone (SB-2095) — every value was a Sensr-Bio brand, so a third-party integration had no correct one to pass, and it had no effect on one either. App version + build are self-read from the `PackageManager` at init. `SB_FirmwareConfig` (S3 bucket + Cognito pool) is supplied out-of-band via the internal-only `configureFirmware`, not here.
 
+
 ---
 
 ## 3. The `SensorBioSDK` facade
@@ -147,7 +148,7 @@ event streams, recording control, device & BLE control (§3.4), and the flat ser
 | `lastSyncd` | `StateFlow<Long?>` | wall-clock epoch (ms) of the last completed sync; survives disconnect; null until first |
 | `networkStatus` | `StateFlow<SB_NetworkStatus>` | phone reachability (UNREACHABLE/WIFI/CELLULAR/OTHER) |
 | `haveUnuploadedPackets` | `StateFlow<Boolean>` | synced packets buffered on disk awaiting upload |
-| `inflightSubmissions` | `StateFlow<List<SB_RecordingSubmissionInfo>>` | finished recordings the server hasn't ingested yet (newest first); host pins them atop the timeline as Uploading…/Processing…/Couldn't-sync cards. Reconcile with `reconcileSubmissions(...)` after each timeline fetch |
+| `inflightSubmissions` | `StateFlow<List<SB_RecordingSubmissionInfo>>` | finished recordings the server hasn't ingested yet (newest first); host pins them atop the timeline as Uploading…/Processing…/Couldn't-sync cards. Reconcile with `reconcileSubmissions(...)` after each timeline fetch. A submit the server rejects (a non-`OK` response code — `INVALID_TIMESTAMPS` / `MISSING_METADATA` / `INVALID_METADATA`) goes straight to `FAILED` with the reason on `lastErrorMessage`, never `UPLOADED`; a rejected spot check also emits `biometricRecordResult` with `error` set (SB-1851) |
 | `webAppCookie` | `StateFlow<String?>` | web-dashboard auth cookie from the login response; set on sign-in, cleared on sign-out, persisted |
 | `userProfileFlow` | `StateFlow<SB_UserProfile?>` | reactive signed-in profile; emits on sign-in / profile / photo / goals / globals refresh / sign-out |
 | `userAppSettings` | `StateFlow<SB_UserAppSettings>` | reactive app-settings (units/preferences); never null — holds the defaults until the server globals load (and again after sign-out), manual refresh via `refreshUserAppSettings()` |
@@ -295,7 +296,7 @@ The reports are also **persisted** against their submission row, so a host that 
 | report | what the server does differently | effect |
 |---|---|---|
 | `activityReport` | recomputes calories from its own copy of the HR series and its own 30-day resting-HR baseline, and picks between two calorie formulas with a deployment env flag (`CALORIE_FORMULA_VO2MAX`) the client cannot observe. The SDK implements the documented default (HR-only Keytel). | the headline calorie figure can settle slightly when the timeline entry lands |
-| `meditationReport` | recomputes the score on **every read**, against baselines drawn from the whole account; the SDK's come from local sleep history (sleep-gated, five-day minimum, median, "0 means not established"). | a device with less history than the account can score lower, or hit a not-scoreable sentinel the server would not |
+| `meditationReport` | rates the HR / HRV trend lines (`hrLinearFit` / `hrvLinearFit`) against baselines drawn from the whole account; the SDK's come from local sleep history (sleep-gated, five-day minimum, median, "0 means not established"). | a device with less history than the account can colour a trend line differently, or leave it unrated where the server would rate it |
 
 
 **The HR series on both is the band's continuous-HR channel.** The band emits two independent HR signals — the per-second `continuous_hr` stream and the PPG algorithm's own `hrResult` — on different cadences. Activity and meditation graphs take the continuous stream as the series and admit an algorithm sample only where the continuous stream has nothing within 5 s, so the two are never interleaved. Continuous HR is primary because it is what the live-measures upload sends, which keeps the on-device graph and the server's graph the same graph. Earlier builds merged the two on exact timestamp equality; because their cadences differ the merge never collided and both survived, drawing two series as one (SB-2134). HRV and respiration still merge by equality — their two sources are the same `ppg_metrics` packet recorded twice at one epoch, so every point collides by design. The HR series is clamped to 20–220 bpm on all three report types; meditation alone had previously skipped that.
@@ -304,7 +305,7 @@ Note that this makes the graph *coherent*, not automatically *correct*: if the c
 
 Hosts should refresh an on-screen report in place when the server entry lands rather than re-navigating.
 
-> **The movement penalty is always 0**, in the SDK and on the server both. The server variable feeding it is declared and never assigned, so the penalty has never contributed to any meditation it has scored. The SDK matches what the server *does*, not what it appears to intend — "fixing" it locally would make every local score read low.
+> **There is no meditation score** (SB-2154). `SB_MeditationGraph` carries the series, the aggregates, the survey, the trend lines and the pause segments; the `score` / `scoreFactors` / `scorePenalty` fields and the `SB_MeditationScore` / `SB_MeditationScoreFactor` / `SB_MeditationScorePenalty` / `SB_MeditationProcessState` types were removed, as was the local scoring model, because no host rendered them. **Breaking:** a host reading those fields no longer compiles.
 
 #### 3.2.2 `reauthenticationRequired` — the session is over
 
@@ -384,6 +385,7 @@ and failure times, and the phone clock `device epoch updated` compared the band 
 | `device firmware update failed` | an `updateFirmware` call failed — once per call, just before it throws `SB_FirmwareUpdateError` (which is unchanged) | `reason` — see below · `current_version` — band firmware when the update started (`""` if unknown) · `attempted_version` — the version being installed: known when the bytes are the image the SDK's own `getFirmware` returned (internal builds), else `""` · `phone_epoch` — time of the failure, **seconds** |
 | `device firmware update successful` | an `updateFirmware` call succeeded — once per call. Sent after the band reboots and reconnects, so `new_version` is what the band itself reports; if it isn't back within 5 minutes, sent then with the installed version | `old_version` — band firmware before the update · `new_version` — the version the band reports after its reboot, else the installed version (`""` if the SDK didn't know it) |
 | `sleep recording uploaded to server successful` | the sleep upload RPC returned OK (including when the server flagged the sleep spurious) | `sleep_end_epoch` — sleep end, **milliseconds** |
+| `sleep recording upload failed` | the server permanently rejected a sleep upload, so the SDK dropped the sleep and will not retry it — once per sleep. Transient failures (no internet, timeouts, server errors) send nothing: the sleep stays queued and is retried | `reason` — see below · `sleep_end_epoch` — sleep end, **milliseconds** |
 
 `device sync failed` `reason` values:
 
@@ -393,6 +395,16 @@ and failure times, and the phone clock `device epoch updated` compared the band 
 | `store_write_failed` | persisting the batch failed, so it was NAK'd to keep it on the band | both |
 | `store_in_memory` | the SwiftData store fell back to in-memory | iOS only |
 | `unknown` | any other NAK | reserved — Android never NAKs for another cause today |
+
+`sleep recording upload failed` `reason` values (the same on iOS):
+
+| `reason` | Meaning |
+|---|---|
+| `invalid` | the upload response's status was `STATUS_CODE_INVALID` |
+| `bad_sleep_request` | … `STATUS_CODE_BAD_SLEEP_REQUEST` |
+| `sleep_stages_timeseries_data_issue` | … `STATUS_CODE_SLEEP_STAGES_TIMESERIES_DATA_ISSUE` |
+| `unrecognized_status` | … a status code the SDK doesn't recognise |
+| `invalid_argument` | the RPC itself failed with gRPC `INVALID_ARGUMENT` — the server validated the payload and refused it |
 
 `device firmware update failed` `reason` values. When the band / Bluetooth layer reported an OTA status,
 `reason` is that status's name, lowercased (the same list on iOS):
@@ -582,7 +594,7 @@ all-set screen.
 | `connect` | `(id: String) -> Unit` | manual reconnect of the paired device; **not** used for pairing |
 | `disconnect` | `(id: String? = null) -> Unit` | drop the connection (null = current device) |
 | `removeDeviceFromPairedDevices` | `(id: String) -> Unit` | unpair |
-| `reset` | `() -> Unit` | factory-reset the device |
+| `reset` | `() -> Unit` | send the connected band its reset command. This is a plain reset, **not** a factory reset; the outcome arrives on `deviceReset` (§3.2) |
 | `userLED` | `suspend (red=…, green=…, blue=…, blink=…, seconds: Int)` | LED control (awaits the BLE write) |
 | `hapticMotor` | `suspend (pulse: Boolean = false, intensity: Int, seconds: Int)` | run the haptic motor (awaits the BLE write). `pulse` = pulse vs. solid (haptic analogue of `blink`); `intensity` is 0..100% |
 | `updateFirmware` / `setFirmwareUpdateDeviceId` | `suspend (url, delay?, size?)` **or** `suspend (data: ByteArray, delay?, size?)` *(throws `SB_FirmwareUpdateError(canRetry)`)* / `(deviceId: String?)` | firmware flash — `url` = a local file, or pass `data` = the bytes from `getFirmware` (SDK temp-files them internally); progress on the `firmwareProgress` event (§3.2). Each call reports `device firmware update failed` or `device firmware update successful` on `analyticsEvents` (§3.2.3). `setFirmwareUpdateDeviceId` is the session-guard seam |
@@ -649,8 +661,10 @@ Called directly on `SensorBioSDK.<method>(…)`. One-shot reads are `suspend fun
 | Domain | Methods (flat on `SensorBioSDK`) |
 |---|---|
 | Dashboard | `fetchDashboardData(date: Instant, tzOffset, forceRemote)`, `dashboardUpdates(date: Instant, tzOffset, forceRemote): Flow<SB_DashboardData>` *(stale-then-fresh stream — replaces the removed `cachedDashboardData` peek)*, `clearDashboardData(date: Instant)` *(`metricsList` also carries the SDK's own `STRESS_INDEX_DASH_METRIC` tile — see §5.9.1)* |
-| Skin temperature | `getSkinTemperature(date: Instant) -> SB_SkinTemperature?` *(on-device read — aggregates the local `temperature_data` rows for the calendar day into min/max/average + ascending points, all Celsius; no network; null when the day has no points. App applies °C/°F for display.)* |
-| Local-first dashboard | `getDashboardData(date: Instant) -> SB_DashboardData` *(SB-2422 — the same payload as `fetchDashboardData`, assembled on the device: rings from the local sleep / recovery / activity scores, tiles from the `get…Points` reads, plus the stress index tile from `getStressIndex` (§5.9.1). Never throws; a part it can't read is absent. No insights, sleep recommendation, SpO2 tile or metric footers.)* |
+| Skin temperature | `getSkinTemperature(date: Instant) -> SB_SkinTemperature?` *(local-first read — aggregates the local `temperature_data` rows for the day into min/max/average + ascending points, all Celsius, with no network when the day has points on device; a day with none falls back to the server, backfills the points locally as already-uploaded rows and re-reads — §5.13. Never throws; null when the day has no points anywhere or the fallback fails. The day is the HR / HRV / RR reads' — midnight to midnight plus every sleep that ended on it — and each point carries an `SB_HRPointType` ASLEEP / AWAKE tag (SB-1433). App applies °C/°F for display.)* |
+| Skin temperature trending | `fetchDailyTemperature(date: Instant, forceRemote: Boolean = false) -> SB_DailyTemperatureTrending`, `fetchRangeTemperature(date: Instant, granularity: SB_ViewGranularity, forceRemote: Boolean = false) -> SB_TemperatureRangeTrending` *(server reads, disk-cached like the other trending reads; Celsius. Range takes WEEK / MONTH / YEAR only — §5.13.)* |
+| SpO2 | `getSpO2(date: Instant) -> SB_SpO2?` *(SB-1433 — on-device read: aggregates the valid, non-zero SpO2 slots of the local `ppg_data_results` rows for the day into min/max/average + ascending points, in percent, each tagged `SB_HRPointType` ASLEEP / AWAKE (same day window as the HR / HRV / RR reads); no network; null when the day has no valid readings. Day only — `fetchRangeSpO2` is the server week/month/year read.)* |
+| Local-first dashboard | `getDashboardData(date: Instant) -> SB_DashboardData` *(SB-2422 — the same payload as `fetchDashboardData`, assembled on the device: rings from the local sleep / recovery / activity scores, tiles from the `get…Points` reads, plus the stress index tile from `getStressIndex` (§5.9.1) and the SpO2 tile (the day's average) from `getSpO2`. Never throws; a part it can't read is absent. No insights, sleep recommendation or metric footers.)* |
 | Continuous stress index | `getStressIndex(date: Instant) -> SB_StressIndexDay?`, `fetchStressIndex(date: Instant) -> SB_StressIndexDay?` *(SB-2229 — on-device and server reads of a day's stress index — see §5.9.1)* |
 | Local-first HR points | `getHRPoints(date: Instant) -> SB_HRDataPoints` *(local-first read — see §5.2)* |
 | Local-first HRV points | `getHRVPoints(date: Instant) -> SB_HRVDataPoints` *(local-first read — see §5.3)* |
@@ -1321,8 +1335,8 @@ enum class SB_HRZone { BASELINE, ZONE_1, ZONE_2, ZONE_3, ZONE_4, ZONE_5 }
 ```
 
 - **Reports:** `SB_HRMExerciseZone.zone: SB_HRZone?` says which zone a time-in-zone row is. The
-  below-zone-1 row is `BASELINE`. `zone` is null only when the server sent a zone name this SDK doesn't
-  recognize. That row is kept so the times still add up, but it isn't any zone and shouldn't be
+  below-zone-1 row is `BASELINE`. `zone` is null only when the server sent no zone number and a zone
+  name this SDK doesn't recognize. That row is kept so the times still add up, but it isn't any zone and shouldn't be
   labelled or colored as one.
 - **Building a row:** `SB_HRMExerciseZone(zone = …, hexadecimalColor = …, …)`.
 - **Deprecated, kept for one release:** `SB_HREffortZone` and `SB_HRMExerciseZone.description`. These
@@ -1331,8 +1345,10 @@ enum class SB_HRZone { BASELINE, ZONE_1, ZONE_2, ZONE_3, ZONE_4, ZONE_5 }
 - **Stored reports** written by an earlier SDK keep working: `zone` is read from the stored name, so no
   migration is needed.
 
-The server still sends the zone as an English name (`HRMExerciseZone.description` in `data.proto`).
-The SDK maps it to `SB_HRZone`, and nothing after that reads the string. iOS has the same type
+The SDK reads the zone from `HRMExerciseZone.zone` in `data.proto` (SB-2543). When the server leaves
+that unset (`HR_ZONE_UNSPECIFIED`, as servers that predate it do), the SDK falls back to the English
+name in the deprecated `HRMExerciseZone.description`. Either way the SDK maps it to `SB_HRZone` once,
+and nothing after that reads the string. iOS has the same type
 (`SB_HRZone`, `.baseline` / `.zone1`…`.zone5`).
 
 #### Below-warm-up time and the bar colours (SB-2356) ⚠️ behaviour change
@@ -1386,15 +1402,16 @@ val stress = data.metricsList.firstOrNull { it.metricType == SB_DashboardMetricT
 - **No tile means no data.** A day with no readings has no stress entry, and neither does a dashboard
   while the algorithm is off for the org (unless forced in Developer Tools): the same gate that runs
   the calculator.
-- **Source.** Today, on `fetchDashboardData` and the authoritative `dashboardUpdates` emission:
+- **Source.** Any day, on `fetchDashboardData` and the authoritative `dashboardUpdates` emission:
   `fetchStressIndex`, falling back to `getStressIndex` when it throws or returns null (the server only
-  has a point once the phone has uploaded it). Any other day: `getStressIndex`. Offline mode
+  has a point once the phone has uploaded it). Past days are fetched too, so a day the device has no
+  points for — every day, right after a logout → login — still gets its tile (SB-2550). Offline mode
   (`getDashboardData`): `getStressIndex` only. The stress read runs alongside the dashboard read, and its
   failure never fails the dashboard: the tile is just absent.
 - **Cache.** The tile is never stored in the dashboard response cache, which keeps the server's payload
   only; the SDK adds it after that read, on every emission. The `dashboardUpdates` cache pre-paint
   carries the tile from `getStressIndex` (on device, no network), so it shows the device's current value
-  rather than a stale or missing tile, and the authoritative emission then carries today's server value.
+  rather than a stale or missing tile, and the authoritative emission then carries the server's value.
 
 **Day reads.** Both return the same `SB_StressIndexDay`, null for a day with no readings.
 
@@ -1421,9 +1438,12 @@ appear. `getStressIndex` uses the HR day: midnight to midnight plus the full spa
 ended on it. `fetchStressIndex` uses the calendar day in each point's own offset, so it leaves out last
 night's pre-midnight points. Every fetched point is written to the local store as `UPLOADED`, so it is never
 sent back up and a later `getStressIndex` of that day has it; a point already stored keeps its value.
-`fetchStressIndex` throws when signed out or when the call fails. For today, fall back to `getStressIndex`
-when it throws or returns null; for an earlier day, `getStressIndex` is enough. The dashboard tile already
-does this.
+When the device has no sleep filed under the day (a past day right after a logout → login, say),
+`fetchStressIndex` fetches and stores the day's sleeps first, so its points are tagged `ASLEEP` / `AWAKE`
+against them rather than all `AWAKE`; a failed sleep fetch never fails the stress fetch (SB-2550).
+`fetchStressIndex` throws when signed out or when the call fails. Fall back to `getStressIndex` when it
+throws or returns null. Fetch an earlier day too rather than reading only `getStressIndex`: after a logout →
+login the device has no points for it until something fetches them. The dashboard tile already does this.
 
 ---
 
@@ -1599,8 +1619,9 @@ it is why the confirmed activity is indistinguishable from one the user recorded
 `inflightSubmissions` / `localRecordingEntries()` surfaces described in §5.11. A host already
 rendering those needs no extra work for the tail of this flow — only the card that asks the question.
 
-The session is stamped `used_hrm=true`, because unlike every other activity submitted from this queue
-there genuinely are biometrics behind the window: the band turned the PPG on for it. The per-second
+The session is stamped `used_hrm=true`, like every recorded activity (meditation and manually-logged
+activities carry no `used_hrm`), because there genuinely are biometrics behind the window: the band
+turned the PPG on for it. The per-second
 continuous HR it captured uploads as **part of that submit**, attributed to the workout — which is
 exactly why it is not one of the uploads the readiness gate waits on. Uploading it early to satisfy
 the gate would send it with no workout to attribute it to and cost the activity its HR graph.
@@ -1629,6 +1650,64 @@ The cached copy is delivered with its **cursor stripped**. A restored cursor wou
 window the server no longer recognises, which is worse than having none — with it empty the host simply
 has no cursor until the authoritative page lands a moment later, and its infinite-scroll loader is
 already gated on having one.
+
+### 5.13 Skin temperature — local-first day + server trending
+
+`getSkinTemperature(date)` is now **local-first**, with the same contract as `getHRPoints` (§5.2) but
+keeping its nullable, non-throwing signature. It reads the day's on-device temperature with **no** API
+round-trip when the day has points locally. Only a day with none falls back to the server: one
+daily-temperature fetch (the `fetchDailyTemperature` RPC) plus a best-effort sleep fetch so the points
+can be tagged ASLEEP / AWAKE. It backfills the returned points into the local store and re-reads, so a
+later call for that day is served entirely from the device. Backfilled rows are written as **already
+uploaded**, so the passive uploader never sends them back to the server. A band reading already stored at
+the same epoch is never overwritten. It returns null, rather than throwing, when the fallback fails
+(signed out, offline) and when offline mode is on and the device has nothing.
+
+```kotlin
+suspend fun getSkinTemperature(date: Instant): SB_SkinTemperature?
+suspend fun fetchDailyTemperature(date: Instant, forceRemote: Boolean = false): SB_DailyTemperatureTrending
+suspend fun fetchRangeTemperature(
+    date: Instant,
+    granularity: SB_ViewGranularity,   // WEEK / MONTH / YEAR — the server rejects DAY and the call throws
+    forceRemote: Boolean = false,
+): SB_TemperatureRangeTrending
+
+data class SB_DailyTemperatureTrending(
+    val points: List<SB_SkinTemperature.Point>, // ascending; epoch ms; ASLEEP for the server's SLEEPING label
+    val startTimestamp: Long,                   // local midnight of the date, ms
+    val endTimestamp: Long,                     // next local midnight, clamped to now, ms
+    val tzOffset: Int,                          // minutes
+    val average: Float,                         // 0 when there are no points
+    val lowest: Float,
+    val highest: Float,
+    val latest: Float,
+    val baseline: Float?,                       // 30-day whole-day baseline; null until established
+    val vsBaseline: Float?,                     // average − baseline; null when baseline is
+    val sleepAverage: Float?,
+    val awakeAverage: Float?,
+)
+
+data class SB_TemperatureRangeTrending(
+    val sleep: SB_TemperatureTrendingGraph,     // nightly sleep-time temperature, one value per date
+    val daily: SB_TemperatureTrendingGraph,     // whole-day average, one value per date
+)
+
+data class SB_TemperatureTrendingGraph(
+    val graph: SB_WMYGraph,
+    val average: Float,
+    val baseline: Float?,                       // null unless established (see below)
+    val improvementVsBaseline: Float?,
+    val improvementCorrelatesDirectlyWithChange: Boolean, // false for temperature: a rise is not an improvement
+    val changeVsPriorPeriod: Float?,            // vs the previous 7 / 30 / 365 days
+)
+```
+
+All values are Celsius; the app applies °C/°F for display. The server sends a sentinel range baseline
+(`-5`) until enough dates exist. The SDK only exposes `baseline` when `improvementVsBaseline` is present
+and the baseline is positive, so a non-null `baseline` can always be drawn. `fetchDailyTemperature` sends
+the device zone's UTC offset at `date`, which sets the day's boundaries, and fills the local temperature
+store from every response, the same way the HR / HRV / RR daily reads fill theirs. Both `fetch…` reads
+throw the gRPC error when the call fails.
 
 ---
 
@@ -1859,7 +1938,9 @@ Read it as a worked example of the request, the response, and what the app does 
   `SB_HrvSample` / `SB_RespiratoryRateSample` / `SB_SnrSample` / `SB_BbiSample` / `SB_PpgSample` /
   `SB_EcgSample` (§3.2); `SB_LiveMetric`; `SB_HRMData`(+`SB_HRMCategory`); `SB_TimeValuePoint`, `SB_DateValuePoint`,
   `SB_BarGraph`, `SB_CalorieMetric`, `SB_CaloriesTrending`, `SB_CardioStats`;
-  `SB_SkinTemperature`(+`SB_SkinTemperature.Point`) — on-device day summary from `getSkinTemperature(date)`, all Celsius.
+  `SB_SkinTemperature`(+`SB_SkinTemperature.Point`; reuses `SB_HRPointType`) — local-first day summary from `getSkinTemperature(date)` (§5.13), all Celsius; each point tagged ASLEEP / AWAKE.
+  `SB_DailyTemperatureTrending` (reuses `SB_SkinTemperature.Point`) — the server's day from `fetchDailyTemperature(date)`; `SB_TemperatureRangeTrending`(+`SB_TemperatureTrendingGraph`; reuses `SB_WMYGraph`) — the sleep + daily W/M/Y series from `fetchRangeTemperature` (§5.13). All Celsius.
+  `SB_SpO2`(+`SB_SpO2.Point`; reuses `SB_HRPointType`) — on-device day summary from `getSpO2(date)`, in percent; each point tagged ASLEEP / AWAKE (SB-1433).
   `SB_StressIndexDay`(+`SB_StressIndexDay.Point`; reuses `SB_HRPointType`) — a day's continuous stress index from `getStressIndex(date)` / `fetchStressIndex(date)` (§5.9.1): points plus SDK-calculated `latest`/`min`/`max`/`sleepAverage`/`daytimeAverage`.
   `SB_HRDataPoints`(+`SB_HRDataPoint`, `SB_HRPointType{AWAKE,ASLEEP}`) — local-first day HR from `getHRPoints(date)` (§5.2); the container computes `averageHR`/`lowestHR`/`highestHR` on the fly and carries a stored `restingHR` (all nullable, never a misleading 0).
   `SB_HRVDataPoints`(+`SB_HRVDataPoint`; reuses `SB_HRPointType`) — local-first day HRV from `getHRVPoints(date)` (§5.3); the container computes `averageHRV`/`lowestHRV`/`highestHRV` on the fly and carries a stored `restingHRV` (all nullable, never a misleading 0).
@@ -1878,7 +1959,7 @@ Read it as a worked example of the request, the response, and what the app does 
 - **Insights / population** — `SB_NewInsights`, `SB_InsightItem`, `SB_InsightFeedback`,
   `SB_PopulationInsights`(+filters/histogram/radar), `SB_PopulationInsightsFilterList`,
   `SB_PopulationMetricType`, `SB_PopulationAgeGroup`, `SB_PopulationGender`, `SB_DailyStatsResponse`.
-- **Meditation** — `SB_MeditationGraph`, `SB_MeditationScore`(+factors/penalties).
+- **Meditation** — `SB_MeditationGraph`.
 - **Events / elements** — `SB_NotificationElement`.
 - **Surveys / agreements** — `SB_BriefSurvey`(+Question/Answer/Type), `SB_AgreementType`.
 - **Goals / config** — `SB_Goals`, `SB_AppConfig`, `CacheStrategy`, `SB_ViewGranularity`.
