@@ -11,7 +11,7 @@ The pieces that matter:
 - **`app/build.gradle.kts`** — one dependency: `implementation("com.sensorbio:sensorbio-sdk:<version>")`.
   It brings the embedded BLE + edge binaries and the OSS transitive deps (incl. coroutines).
 - **`AndroidManifest.xml`** — BLE runtime permissions (`BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT`, plus
-  `ACCESS_FINE_LOCATION`, which BLE scanning needs at every API level). The SDK's own permissions +
+  `ACCESS_FINE_LOCATION`, which BLE scanning needs below Android 12). The SDK's own permissions +
   foreground service merge in.
 - **`ExampleApplication.kt`** — the required init pattern: `SensorBioSDK.initialize(context)` →
   set `environment` → wire `logHandler`. Nothing organization-scoped is set here: the credentials

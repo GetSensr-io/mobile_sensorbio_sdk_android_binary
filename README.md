@@ -36,11 +36,11 @@ dependencyResolutionManagement {
 
 ```kotlin
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:4.1.0")
+    implementation("com.sensorbio:sensorbio-sdk:4.2.1")
 }
 ```
 
-(Groovy DSL is equivalent: `maven { url '…' }` + `implementation 'com.sensorbio:sensorbio-sdk:4.1.0'`.)
+(Groovy DSL is equivalent: `maven { url '…' }` + `implementation 'com.sensorbio:sensorbio-sdk:4.2.1'`.)
 
 ## What you get
 
@@ -125,6 +125,59 @@ See [`com/sensorbio/sensorbio-sdk/maven-metadata.xml`](com/sensorbio/sensorbio-s
 `SDK_INTERFACE.md` documents the public surface as of each release.
 
 ## Release notes
+
+### v4.2.1 — November 4, 2026
+
+Includes 4.2.0, which was not published on its own.
+
+**Behavior changes**
+
+- **The stress index tile now gates the row.** The dashboard's
+  `STRESS_INDEX_DASH_METRIC` tile is present whenever the stress index runs
+  for your organization, and carries `0` for a day with no readings (show
+  "--"). Earlier versions left the tile out for a day with no readings, so
+  if you treat a missing tile as "no data", also treat `0` that way.
+- **The dashboard now includes a skin temperature tile.** `fetchDashboardData`
+  and `dashboardUpdates` add a `TEMPERATURE_DASH_METRIC` tile with the day's
+  mean skin temperature in °C. If you add your own tile from
+  `getSkinTemperature`, remove it.
+- **`dashboardUpdates` is the only read a dashboard needs for a day.** Each
+  value is a complete `SB_DashboardData`. A past day already assembled is
+  served from the device without a network call, emitted once, and the flow
+  completes.
+- **Offline mode: the dashboard reads no longer throw.** `fetchDashboardData`
+  and `dashboardUpdates` return the day assembled on the device
+  (`getDashboardData`) instead of throwing `SB_OfflineModeException`.
+- **Offline mode now keeps raw device data on the phone** for you to collect
+  with `getDevicePackets`, instead of discarding it. Raw sensor logging
+  follows your organization's setting in offline mode too.
+- **`syncCompleted` fires once per sync**, after the final batch, never
+  between intermediate batches.
+
+**New**
+
+- **`getDevicePackets(handler)`** (offline mode): delivers the band's stored
+  raw data as per-stream CSV, a page at a time, deleting each page once your
+  handler returns. New types `SB_DevicePacketBatch` and `SB_DeviceDataStream`.
+- **`getBiometricBaselines(date)`**: the day's resting HR, HRV, respiratory
+  rate and SpO2 against their 30-day baselines, computed on the device.
+  `getDashboardData` now fills those tiles' improvement-vs-baseline footers.
+- **Population insights carry numeric fields.** `SB_PopulationInsightsHistogram`
+  adds `insightValue`, `insightUnit` and `insightPercentage`, so you can build
+  and localize the insight sentence yourself. `insightText` is deprecated;
+  fall back to it when `insightValue` is `0`.
+- **Location is only needed for BLE scans below Android 12.** On 12 and
+  later, `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT` are enough.
+
+**Improvements**
+
+- On-device sleep, recovery and activity scores, and resting HR and HRV, now
+  use the same shared calculation as the iOS SDK and match the server. Days
+  missing from the device are filled from the server's raw data once per
+  session, so the first score read on a new device can make extra network
+  calls; offline mode never fetches.
+- The dashboard's daily trends load much faster, and past days' on-device
+  scores stay cached on disk.
 
 ### v4.1.0 — October 27, 2026
 
