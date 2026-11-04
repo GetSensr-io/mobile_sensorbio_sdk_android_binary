@@ -61,14 +61,13 @@ fun PairDeviceScreen(onClose: () -> Unit) {
     var permissionError by remember { mutableStateOf<String?>(null) }
 
     // The SDK assumes BLE permissions are granted — the host requests them, right before pairing.
-    // Location is required for scan results because the SDK's BLUETOOTH_SCAN isn't neverForLocation.
+    // Location is only needed below Android 12; on 12+ the SDK's BLUETOOTH_SCAN is neverForLocation.
     val context = LocalContext.current
     val blePerms = remember {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             arrayOf(
                 Manifest.permission.BLUETOOTH_SCAN,
                 Manifest.permission.BLUETOOTH_CONNECT,
-                Manifest.permission.ACCESS_FINE_LOCATION,
             )
         } else {
             arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)

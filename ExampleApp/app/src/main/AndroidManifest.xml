@@ -2,11 +2,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- Android 12+ BLE -->
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <!-- Android 12+ BLE. `neverForLocation` matches the SDK's declaration, so on 12+ scanning needs no
+         location grant. -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <!-- The SDK's BLE scan is not flagged neverForLocation, so scanning needs location at every API
-         level. (Location Services must also be turned on on the device for scan results.) -->
+    <!-- Below Android 12, BLE scanning needs location (and Location Services turned on on the device
+         for scan results). -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
     <application

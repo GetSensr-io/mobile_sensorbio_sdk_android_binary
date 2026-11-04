@@ -12,7 +12,7 @@ This document describes the **public** customer-facing surface of the SensorBio 
 
 > **Visibility note.** This covers the customer-facing API only. SDK-internal symbols and first-party
 > (`internal`-flavor) API are not part of the published binary and are not documented in the customer
-> copy. SDK `version = "4.1.0"`.
+> copy. SDK `version = "4.2.1"`.
 
 > **Backend guide.** Registration needs one endpoint on your own server, which mints the single-use
 > SDK token your app hands to the SDK. [§6](#6-minting-sdk-tokens--your-backend) is the guide for
@@ -41,7 +41,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:4.1.0")
+    implementation("com.sensorbio:sensorbio-sdk:4.2.1")
 }
 ```
 
@@ -74,14 +74,15 @@ integrator supplies the usage strings and drives the prompt.)
 
 Request at runtime:
 
-- **Android 12+ (API 31+):** `BLUETOOTH_SCAN`, `BLUETOOTH_CONNECT`, **and** `ACCESS_FINE_LOCATION`.
-- **API < 31:** `ACCESS_FINE_LOCATION`.
+- **Android 12+ (API 31+):** `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT`. No location.
+- **API < 31:** `ACCESS_FINE_LOCATION`. (`BLUETOOTH` / `BLUETOOTH_ADMIN` are install-time permissions
+  there, granted from the manifest — never requested at runtime.)
 
-**Location is required at every API level** because the SDK's `BLUETOOTH_SCAN` is **not** declared
-`neverForLocation` — Android therefore treats scan results as location-deriving and returns none unless
-fine-location is granted. **Location Services must also be turned on** on the device, or scans come back
-empty. (A future SDK release may add the `neverForLocation` flag to drop the location requirement on
-12+; until then, request location.) The SDK's manifest declares the BLE permissions; the **grant** is
+**Location is only needed below Android 12.** The SDK declares `BLUETOOTH_SCAN` with
+`usesPermissionFlags="neverForLocation"` (SB-1250), so on 12+ scan results are delivered without a
+location grant and with Location Services off. Below 12 there is no such flag: Android treats every BLE
+scan as location-deriving, so scans come back empty unless fine-location is granted **and Location
+Services is turned on** on the device. The SDK's manifest declares the BLE permissions; the **grant** is
 the host's to obtain. See `ExampleApp/`'s `MainActivity`/`PairDeviceScreen` for the request pattern.
 
 ---
@@ -127,8 +128,8 @@ event streams, recording control, device & BLE control (§3.4), and the flat ser
 | `pairedDevice` | `SB_PairedDeviceState?` | the single paired device's slim identity (macAddress/name/type); null when none paired |
 | `haveDevice` | `StateFlow<Boolean>` | a device is paired (derived from `pairedDevice`) |
 | `pairingState` | `SB_PairingState?` | where the open pairing transaction stands; null when none is open (§3.4 *Pairing*) |
-| `updateRequired` | `StateFlow<Boolean>` | a firmware update is **required** (current firmware outside the min/max window); SDK-owned decision |
-| `updateSuggested` | `StateFlow<Boolean>` | a firmware update is **suggested** (newer baseline exists, not mandatory) |
+| `updateRequired` | `StateFlow<Boolean>` | a firmware update is **required** (current firmware outside the min/max window); SDK-owned decision. Never `true` for a device emulator (serial `EMULATR…`) on firmware `99.99.99` |
+| `updateSuggested` | `StateFlow<Boolean>` | a firmware update is **suggested** (newer baseline exists, not mandatory). Never `true` for a device emulator on firmware `99.99.99` |
 | `latestFirmwareVersion` | `StateFlow<String?>` | the version the host would flash to; null when no device/firmware or upgrades disabled |
 | `deviceSyncing` | `StateFlow<Boolean>` | a device sync is in progress |
 | `percentSynced` | `StateFlow<Int>` | connected device's sync progress 0–100 (**100 = up to date**); resets to 100 on disconnect |
@@ -214,7 +215,7 @@ event streams, recording control, device & BLE control (§3.4), and the flat ser
 | `latestBookend` | `SB_LatestBookend(startTs, endTs)` | activity window (epoch ms) resolved by a sync from the band's activity bookends (spot-check confirm) |
 | `deviceLinkFailed` | `SB_DeviceLinkFailure` | a device-link (serial-enforcement) rejection; host alerts "wrong device" / retry |
 | `firmwareProgress` | `Float` | raw firmware-flash progress percent (0–100); pairs with the suspend `updateFirmware()` (§3.4) |
-| `syncCompleted` | `SB_SyncResult?` | a device sync drained; non-null on detailed completion, null on short-circuit |
+| `syncCompleted` | `SB_SyncResult?` | a device sync drained; non-null on detailed completion, null on short-circuit. Fires once per sync, after the final batch — never between intermediate batches |
 | `biometricRecordResult` | `SB_BiometricRecordResult` | spot-check submit outcome (recording id on success / error on terminal failure) |
 | `spotCheckReport` | `SB_SpotCheckDetails` | the spot check's report, built from local data at finalize — **before** the submit and without waiting on it (see below) |
 | `activityReport` | `SB_WorkoutDetail` | a finished activity's report, built from local data at finalize — before the submit and without waiting on it (see below) |
@@ -660,12 +661,14 @@ Called directly on `SensorBioSDK.<method>(…)`. One-shot reads are `suspend fun
 
 | Domain | Methods (flat on `SensorBioSDK`) |
 |---|---|
-| Dashboard | `fetchDashboardData(date: Instant, tzOffset, forceRemote)`, `dashboardUpdates(date: Instant, tzOffset, forceRemote): Flow<SB_DashboardData>` *(stale-then-fresh stream — replaces the removed `cachedDashboardData` peek)*, `clearDashboardData(date: Instant)` *(`metricsList` also carries the SDK's own `STRESS_INDEX_DASH_METRIC` tile — see §5.9.1)* |
+| Dashboard | `fetchDashboardData(date: Instant, tzOffset, forceRemote)`, `dashboardUpdates(date: Instant, tzOffset, forceRemote): Flow<SB_DashboardData>` *(the one read a dashboard makes per day — see "One read per day" below)*, `clearDashboardData(date: Instant)` *(`metricsList` also carries the SDK's own `TEMPERATURE_DASH_METRIC` and `STRESS_INDEX_DASH_METRIC` tiles — see below and §5.9.1)* |
 | Skin temperature | `getSkinTemperature(date: Instant) -> SB_SkinTemperature?` *(local-first read — aggregates the local `temperature_data` rows for the day into min/max/average + ascending points, all Celsius, with no network when the day has points on device; a day with none falls back to the server, backfills the points locally as already-uploaded rows and re-reads — §5.13. Never throws; null when the day has no points anywhere or the fallback fails. The day is the HR / HRV / RR reads' — midnight to midnight plus every sleep that ended on it — and each point carries an `SB_HRPointType` ASLEEP / AWAKE tag (SB-1433). App applies °C/°F for display.)* |
 | Skin temperature trending | `fetchDailyTemperature(date: Instant, forceRemote: Boolean = false) -> SB_DailyTemperatureTrending`, `fetchRangeTemperature(date: Instant, granularity: SB_ViewGranularity, forceRemote: Boolean = false) -> SB_TemperatureRangeTrending` *(server reads, disk-cached like the other trending reads; Celsius. Range takes WEEK / MONTH / YEAR only — §5.13.)* |
 | SpO2 | `getSpO2(date: Instant) -> SB_SpO2?` *(SB-1433 — on-device read: aggregates the valid, non-zero SpO2 slots of the local `ppg_data_results` rows for the day into min/max/average + ascending points, in percent, each tagged `SB_HRPointType` ASLEEP / AWAKE (same day window as the HR / HRV / RR reads); no network; null when the day has no valid readings. Day only — `fetchRangeSpO2` is the server week/month/year read.)* |
-| Local-first dashboard | `getDashboardData(date: Instant) -> SB_DashboardData` *(SB-2422 — the same payload as `fetchDashboardData`, assembled on the device: rings from the local sleep / recovery / activity scores, tiles from the `get…Points` reads, plus the stress index tile from `getStressIndex` (§5.9.1) and the SpO2 tile (the day's average) from `getSpO2`. Never throws; a part it can't read is absent. No insights, sleep recommendation or metric footers.)* |
+| Local-first dashboard | `getDashboardData(date: Instant) -> SB_DashboardData` *(SB-2422 — the same payload as `fetchDashboardData`, assembled on the device: rings from the local sleep / recovery / activity scores, tiles from the `get…Points` reads, plus the skin temperature and stress index tiles `fetchDashboardData` adds (§5.9.1); the respiratory-rate and SpO2 tiles as the server's take them — the day's longest sleep, or the whole day when it has no sleep, with SpO2 falling back to `getSpO2`'s day mean. The resting HR, HRV, respiratory-rate and SpO2 tiles carry `IMPROVEMENT_VS_BASELINE` footers from `getBiometricBaselines` (§5.8.1) when the metric has a baseline; the rest are `VALUE_NOT_SET`. Never throws; a part it can't read is absent. No insights or sleep recommendation.)* |
+| Biometric baselines | `getBiometricBaselines(date: Instant) -> SB_BiometricBaselines` *(the day's resting HR / HRV / respiratory rate / SpO2 against their 30-day baselines, computed on the device — see §5.8.1)* |
 | Continuous stress index | `getStressIndex(date: Instant) -> SB_StressIndexDay?`, `fetchStressIndex(date: Instant) -> SB_StressIndexDay?` *(SB-2229 — on-device and server reads of a day's stress index — see §5.9.1)* |
+| Device data export | `getDevicePackets(handler: suspend (SB_DevicePacketBatch) -> Unit) -> Int` *(SB-2630 — offline mode only: parses the stored raw device packets to CSV on the device and hands them over a page at a time, deleting each page once `handler` returns — see [Device data export](#device-data-export-sb-2630--interface-change))* |
 | Local-first HR points | `getHRPoints(date: Instant) -> SB_HRDataPoints` *(local-first read — see §5.2)* |
 | Local-first HRV points | `getHRVPoints(date: Instant) -> SB_HRVDataPoints` *(local-first read — see §5.3)* |
 | Local-first RR points | `getRRPoints(date: Instant) -> SB_RRDataPoints` *(local-first read — see §5.4)* |
@@ -693,18 +696,72 @@ Called directly on `SensorBioSDK.<method>(…)`. One-shot reads are `suspend fun
 | Session | `registerUser(userId, email?, sex?, birthdayYear?, birthdayMonth?, birthdayDay?, heightCm?, weightKg?, imperialUnits, activationCode?) -> SB_RegisterUserOutcome` *(SDK-key register-or-login; org creds come from `sdkCredentials` — see §5.1; this is the SDK's **only** registration path)*, `signOut()`, `persistUser`, `deleteAccount`, `clearSession`, `clearPrefsOnLogout` *(`signOut`/`clearSession` cancel only the SDK's own WorkManager jobs; the host app's WorkManager work is left running; SB-2402)* *(signed-in identity is observable — see §3.1 `session`/`userProfileFlow`)* |
 
 
+#### One read per day ⚠️ behavior change
+
+`dashboardUpdates` is the only read a dashboard needs for a day: every value it emits is a whole `SB_DashboardData` — the server's payload plus the tiles the SDK adds from the device (skin temperature below, stress index §5.9.1) — so a dashboard renders each value as it arrives and makes no `getSkinTemperature` or stress-gating read of its own. `fetchDashboardData` returns the same payload once.
+
+- **A past day it has already assembled** is one cached entry, served from the device's storage without a network call; the flow emits it and completes. The entry is replaced when data lands on the day — a sync or backfill of its HR / HRV / RR, activity, steps, sleeps, skin temperature or stress points — and on `forceRemote = true`, which emits the entry and then refetches. It is only kept once the server's payload for the day is final (fetched after the day ended).
+- **Otherwise** it emits the last cached payload first (its device tiles read from the device only, so the first paint never waits on the network), then the fresh value, as before.
+- **Offline mode:** both reads return the day assembled on the device (`getDashboardData`) instead of throwing `SB_OfflineModeException`.
+
+**Skin temperature tile.** The SDK appends a `TEMPERATURE_DASH_METRIC` tile: the day's mean skin temperature, as `getSkinTemperature`'s `average` — `valueFloat` in Celsius, `value` that rounded, `title` `"SKIN TEMPERATURE"`, `valueUnit` `"°C"`, footer `VALUE_NOT_SET`. It is absent for a day with no temperature reading. It is read from the device (falling back to the server when the device has nothing for the day), alongside the server's request, and never fails the read; the cached first paint reads the device only.
+
 #### Offline mode (SB-2422)
 
 An organization can turn on **offline mode** in its white-label settings when it does not want Sensor Bio holding its users' data. The SDK picks the setting up on its own, and while it is on:
 
 - **Nothing is uploaded.** Metrics from the band are still decoded and stored exactly as before, pending, but no upload work is enqueued: biometrics, activity, steps, temperature, sleep, recording submissions, surveys, workout edits, algorithm results, battery and last-sync telemetry. Upload jobs that carry a request file are kept on disk and held. When the organization turns offline mode off, the held jobs are re-enqueued and every upload type is flushed, so the backlog uploads.
-- **Raw device data packets are not stored**, and the band is told not to log raw sensor data (`isRawLoggingEnabled` reads `false`). The band is still acked.
-- **Server reads fail.** Every `fetch…` method and every `…Updates` flow throws `SB_OfflineModeException`, even when a cached copy exists — except the configuration reads still allowed below (`fetchGoals`). The on-device `get…` reads keep working, and never fall back to the server; `getDashboardData` builds the dashboard from them. Writes that go to the server (`addSleepSession`, `updateGoals`, profile updates, …) fail the same way.
+- **Raw device data packets are kept on the device instead of uploaded**, for your app to collect as CSV with `getDevicePackets` (see [Device data export](#device-data-export-sb-2630--interface-change) below). Raw sensor logging follows the organization's setting in offline mode too (`rawDataEnabled`). With it off, what is kept is the summary data the band always syncs (steps, events, activity, skin temperature, BBI, PPG results, …); with it on, the raw waveforms (PPG, accelerometer, gyroscope, ECG) are kept alongside it, which multiplies what accumulates until `getDevicePackets` collects it. The band is still acked.
+- **Server reads fail.** Every `fetch…` method and every `…Updates` flow throws `SB_OfflineModeException`, even when a cached copy exists — except the configuration reads still allowed below (`fetchGoals`), and the dashboard (`fetchDashboardData` / `dashboardUpdates`), which returns the day assembled on the device (`getDashboardData`). The on-device `get…` reads keep working, and never fall back to the server; `getDashboardData` builds the dashboard from them. Writes that go to the server (`addSleepSession`, `updateGoals`, profile updates, …) fail the same way.
 - **Still allowed:** sign-in and sign-up, token refresh, sign-out, account deletion, password change, agreements, the white-label settings fetch itself, reading goals, the enabled-algorithm list, and device linking / locked devices.
 
 ```kotlin
 class SB_OfflineModeException : Exception("Unavailable in offline mode")
 ```
+
+#### Device data export (SB-2630) ⚠️ interface change
+
+In offline mode the band's raw device data stays on the phone. `getDevicePackets` parses it on the device into CSV — the same rows, byte for byte, that the web device-data download produces — and hands it to your app a page at a time. Where the CSV goes (a file, your own server, another app) is up to you. iOS parity: `getDevicePackets(_:)` (SB-2629).
+
+```kotlin
+suspend fun getDevicePackets(handler: suspend (SB_DevicePacketBatch) -> Unit): Int   // pages delivered
+
+data class SB_DevicePacketBatch(
+    val serialNumber: String,                       // the band the data came from
+    val csv: Map<SB_DeviceDataStream, String>,      // data rows per stream, each ending "\n", no header line
+    val isEndOfStream: Boolean,                     // this band's stream ended (offline mode turned off, or the band was removed)
+)
+
+enum class SB_DeviceDataStream(val streamName: String) {
+    PPG("ppg"), IMU("imu"), GYRO("gyro"), ECG("ecg"), EVENTS("events"), STEPS("steps"), ACTIVITY("activity"),
+    SKIN_TEMPERATURE("skin_temperature"), BATTERY("battery"), AFE_SETTINGS("afe_settings"), WORN("worn"),
+    MOTION("motion"), CONTINUOUS_HR("continuous_hr"), SLEEP_WAKE("sleep_wake"), BBI("bbi"), BOOKENDS("bookends"),
+    PPG_RESULTS("ppg_results");
+
+    val csvHeader: String   // the stream's CSV header line, no trailing "\n"
+}
+```
+
+```kotlin
+sensorBio.getDevicePackets { batch ->
+    for ((stream, rows) in batch.csv) {
+        val file = File(folderFor(batch.serialNumber), "${stream.streamName}.csv")
+        appendCreatingWithHeader(file, header = stream.csvHeader, rows = rows)   // throw if the write fails
+    }
+}
+```
+
+- **Nothing is deleted until your handler returns.** The SDK deletes a page's data only after `handler` returns without throwing. If it throws — or the app is killed mid-page — the call stops (and rethrows your exception), and that page comes back on the next call. Make the handler's write durable (flush and `fd.sync()`) before it returns.
+- **Call it whenever you like.** With nothing stored it returns `0` without calling `handler`. Calls don't overlap: a second call waits for the first to finish.
+- **Pages, not one blob.** Each call delivers everything stored, one page and one band at a time (a page is about 1 MB of raw data, typically 4–14 MB of CSV). `csv` has no header lines, so pages append straight onto one file per stream: write `stream.csvHeader` once, when you create the file. A stream with no rows in a page has no entry.
+- **The rows.** The first column of every stream is `ts(ns)`, nanoseconds since the Unix epoch. Rows of a stream arrive in the order the band recorded them, which is almost always — but not strictly — time order; sort on `ts(ns)` if you need it. Different streams are not in step with each other. `PPG` always carries all five channel columns (an absent channel is an empty field).
+- **The newest samples arrive with the next sync.** Each sensor's last second or two of samples is held until the band's next sync, when its timing becomes known. Nothing is lost; it is in a later page.
+- **Storage is yours to manage.** Data is kept only until it is delivered, but in offline mode it accumulates until you call. A day of continuous high-rate sensor capture can be tens of MB of raw data (hundreds of MB of CSV), so call it regularly — after each sync (`syncCompleted`), say.
+- **Outside offline mode** the data is uploaded instead, and the call returns `0`. The one exception is the first call after offline mode is turned off: it delivers each band's final page, with `isEndOfStream == true`. Whatever was not yet delivered when offline mode turned off is uploaded.
+- **Sign-out** deletes undelivered data with every other on-device record.
+- **Removing the band** (`removeDeviceFromPairedDevices`) ends its stream. The next call delivers what the band left — the data stored before the removal, then the samples held back for its next sync — and ends with a page whose `isEndOfStream == true`. A band added afterwards, even the same one, starts a new stream.
+- **A new stream starts at the beginning of a sync.** Stored data from the middle of a sync whose start is gone — uploaded before offline mode was turned on — can't be parsed reliably, so it is dropped rather than delivered.
+- **Cost.** Parsing is CPU-bound — on a desktop core, roughly 0.5–1 s per MB of raw sensor data — and runs on a background thread, where `handler` is called too. Avoid starting a large backlog from a time-limited background job.
 
 **Server reads land in the database (SB-2422, all orgs).** Separately from offline mode, every daily server read now also saves what it returns into the tables the `get…` reads use — not just the response cache — filling only what the phone is missing, any day including today: HR / HRV / RR per point, steps / calories per hour (only hours with no band rows), and sleep per night including its stage timeline. Band data is never overwritten or marked uploaded. A day viewed online is therefore readable — and scorable — on the device later, offline mode included.
 
@@ -1044,11 +1101,14 @@ suspend fun getRRPoints(date: Instant): SB_RRDataPoints
 
 data class SB_RRDataPoints(val points: List<SB_RRDataPoint>) {
     // Computed on the fly from `points`; each is null when its input set is empty.
-    // Mirrors the RR day view (brpm + daily-average / lowest / highest): `restingRR`
-    // (mean of ASLEEP/nocturnal points) is the offline proxy for the server's sleep-derived brpm.
+    // Mirrors the RR day view (brpm + daily-average / lowest / highest): `restingRR` is the
+    // server's sleep-derived brpm.
     // Unlike HR/HRV these are Float — RR is inherently fractional (matches the API path's brpm).
     val averageRR: Float?          // mean value of all points (daily average)
-    val restingRR: Float?          // STORED: mean over the day's LONGEST sleep, to one decimal
+    val restingRR: Float?          // STORED: the day's LONGEST sleep's own Brpm, to one decimal — the
+                                   // median of its captures less resting-HR and HRV outliers, which is
+                                   // the server's uncertainty-weighted mean for captures uploaded (as
+                                   // the SDK uploads them) with no uncertainty
     val lowestRR: Float?           // min value
     val highestRR: Float?          // max value
 }
@@ -1176,9 +1236,9 @@ The returned `SB_SleepDetailDay` is populated with what the device stores, **rec
 
 - **stage metrics** — the per-epoch stages are clamped to `[sleepOnset, wakeUp]` and re-counted (server `UpdateSleepDerivedMetricsUsingTimestampedStages`), so the leading sleep-latency awake and any trailing awake are excluded. Each stage's minutes are the epoch count divided by the device's epochs-per-minute with **integer truncation** (server `int32(count / multiplier)`), matching the server to the minute. This drives the four legend percentages (largest-remainder rounding), the per-stage duration tiles, `sleepTimeSec` = (light + deep + rem) × 60, and the in-window arousal count. The stage-timeline `intervals` are likewise the in-window epochs;
 - **`sleepOnset` / `wakeUpTime` / `timezone`**;
-- **biometrics from the on-device `ppg_data_results` over the sleep window, each reproduced the server's way**: **`restingHr`** (header — `CalculateRestingBPM`: mean of the 5 lowest lower-fence-outlier-free BPM), the **Average HR** tile (median of the same outlier-free BPM) and the **Nocturnal HRV** tile (`CalculateRestingHRV`: the residual-outlier-free OLS HRV-vs-time line evaluated at the last epoch). Each is `0`/omitted when there is too little data;
+- **biometrics from the on-device `ppg_data_results` over the sleep window, each reproduced the server's way**: **`restingHr`** (header — `CalculateRestingBPM`: mean of the 5 lowest lower-fence-outlier-free BPM), the **Average HR** tile (median of the same outlier-free BPM) and the **Nocturnal HRV** tile (`CalculateRestingHRV`: the residual-outlier-free OLS HRV-vs-time line evaluated at the last epoch). Each is `0`/omitted when there is too little data — the server's "too little": fewer than 5 samples, or for HRV fewer than 3 non-zero samples to fit (or more than 3,600). Resting HR and HRV are computed in the shared C library (`SB_restingHR` / `SB_restingHRV` in mobile_edge_algorithms), the same code on both platforms, checked against the server's own Go: resting HR matches it exactly, resting HRV to float32 precision (the server fits its line by a QR decomposition, the C by centred least squares);
 - **`metrics`** — the locally-derivable tiles, in the server's tile order with the server's labels: **Total Time in Bed** (= wakeUp − onset + 1 min), **Total Awake**, **Light**, **Deep**, **REM Sleep** (`DURATION`), **Nocturnal HRV** (ms), **Average HR** (bpm), **Awakenings** (count), **Sleep Latency** (= onset − start), then the two editable `TimeTz` tiles **Sleep Onset** + **Wake up Time**. `SleepMetricsGrid` hides any tile whose value is `≤ 0` and full-widths the first survivor;
-- **the sleep score + contributing factors + penalties** (`sleepScore` / `scoreFactors` / `scorePenalty`), computed locally to match the server's `CalculateSleepMainScore`: `score = max(1, goalAchieved×efficiency×100 − penalties)`. Factors = **Total Sleep** (vs the user's sleep goal from `GetGoal`, default 7h), **Deep** (or **Deep And REM**), **Efficiency**; penalties (points > 0 only) = **Awakenings**, **Restlessness** (from the arm disturbances), **Latency**, and **Elevated Avg Heart Rate**. Every input is on-device **except** the HR penalty's 30-day resting-HR baseline, which is recomputed from the last 30 nights' own sleep+PPG history — so the HR penalty is simply **omitted when there isn't enough history** (server parity; e.g. right after a fresh login). If the night has no resting HR at all, no score is produced and the header falls back to the empty "--" ring.
+- **the sleep score + contributing factors + penalties** (`sleepScore` / `scoreFactors` / `scorePenalty`), computed locally to match the server's `CalculateSleepMainScore`: `score = max(1, goalAchieved×efficiency×100 − penalties)`. Factors = **Total Sleep** (vs the user's sleep goal from `GetGoal`, default 7h), **Deep** (or **Deep And REM**), **Efficiency**; penalties (points > 0 only) = **Awakenings**, **Restlessness** (from the arm disturbances), **Latency**, and **Elevated Avg Heart Rate**. Every input is on-device. The HR penalty's **30-day resting-HR baseline** is computed on the device from each of the prior 30 nights' sleep and HR, the same way as tonight's resting HR. A night this device never recorded (before its history began, or recorded on another phone) is filled first: the read pulls that day's sleep and HR from the server — raw data only, never the server's resting HR or score — stores them, and computes the night's resting HR from them. Each missing day is pulled once per signed-in session, and later reads of the same nights are local. So the first sleep-detail read on a new device may make up to 30 days' worth of server reads (about four per day: the sleep list, the sleep detail, and the day's HR and HRV, which the recovery score also uses); in offline mode nothing is pulled, and the baseline uses the nights the device has. The HR penalty is **omitted when no prior night has a resting HR** (server parity; e.g. a new account). If the night itself has no resting HR, no score is produced and the header falls back to the empty "--" ring.
 
 Everything else the server owns and the local row does not hold is left empty/null and simply doesn't render: **bedtime recommendations**, **accounting**, the **HR / HRV / RR / SpO2 biometric graphs** (the per-epoch charts — distinct from the single-value HRV/HR tiles above), **positions**, **apnea / breathing** and **survey**. A **server-backfilled** row (a day that predated local sync) has no stages, so the timeline + stage tiles are empty while the header + window still render.
 
@@ -1221,22 +1281,48 @@ score = round(100 · (0.4·fracHRV + 0.4·fracBPM + 0.1·sleepGoalAchieved + 0.1
 
 The returned graph carries the ring score + **stage** (`REST_UP` <30 · `GO_EASY` <50 · `MEDIUM` <60 · `READY` <75 · `EXCELLENT` ≥75) and its message, the night's resting HR and total sleep, the **vs-average trend** (`variationPercentage`, measured against the mean of the last 30 days' locally-computed scores), and the four **contributing factors** in the server's order — **Nocturnal HRV**, **Resting HR**, **Sleep Efficiency**, **Total Sleep Duration** — each with its percentile and its weighted point contribution.
 
-**Incomplete nights are backfilled, not skipped.** A prior night whose sleep *window* is on device but whose data is not — the partial day a fresh login leaves behind, or a window persisted only for vitals tagging — would otherwise drop silently out of the ranking and shrink its denominator, moving the score without any signal. Two misses are detected and repaired on read, each attempted once per night per process:
+**Missing nights are backfilled, not skipped.** The score reads 61 nights: tonight and the 60 before it (each of the 30 days in the trend average ranks against its own 30 priors). Any prior night this device can't supply all of the inputs for — it was never recorded here (before the device's history began, or on another phone), or its window is here without its HR, its HRV or its stage minutes (the partial day a fresh login leaves behind) — would otherwise drop out of the ranking or the average, or shrink a denominator, moving the score without any signal. Such a night is filled first: the read pulls that day's sleep list and the longest sleep's detail, HR and HRV from the server — raw data only, never the server's resting values or score — stores them, and computes the night's resting HR and HRV from them, the same way as a band night's. Tonight itself is filled only when its window is already on the device; a day with no on-device night is not made scorable from the server. Each missing day is pulled once per signed-in session, shared with §5.7's sleep-score backfill, and later reads are local — so the first recovery read on a new device may make up to 60 days' worth of server reads (about four per day). In offline mode nothing is pulled and the score uses the nights the device has. A result computed while a night could not be filled (a failed read) is returned but not cached, so the next read tries that night again. The same read also fills a night whose HRV series is short of its HR series (fewer than half as many points: part of the night's HRV was never pulled), and once more a server night stored before the SDK kept the server's own stage totals. A server night is stored with the totals the server scores it with — asleep minutes from the detail's `sleepTimeSec`, the light / deep / REM split, total awake and latency from the detail's tiles — not totals summed from its stage intervals, which fall short of them.
 
-- **no biometrics in the window** → the night's raw HR/HRV are fetched and persisted. A night straddles midnight, so *both* calendar days it touches are fetched;
-- **no stage minutes** → the night's server breakdown is fetched and its stage minutes persisted, which is what makes the night scorable and keeps it in the 30-day average.
-
-Both are one-time per night; afterwards the window is served entirely from the device.
+The maths runs in the shared C library (`SB_recoveryScore` in mobile_edge_algorithms, reached through JNI), the same code iOS runs, checked bit for bit against the server's own recovery code.
 
 The read **falls back to the server** for a day the device cannot score the server's way:
 
-- no on-device sleep for the day, or a stage-less (server-backfilled) night;
+- no on-device sleep for the day, or a night with no stage minutes;
 - the night has no resting BPM or HRV;
 - fewer than **four prior nights** with sleep / resting BPM / resting HRV — the server's 5-nights-including-tonight gate. This window matters: the backend blends a population baseline to serve a real score on days 1–4, and that baseline is not on the device, so those days deliberately stay server-served rather than showing nothing.
 
 `SB_DailyRecoveryTrending.isLocallyComputed` reports which source actually served the day, so a host can distinguish a genuine local score from a fallback. `preferLocal = false` (on both `fetchDailyRecovery` and `dailyRecoveryUpdates`) skips the on-device computation and reads the server's score — the comparison hatch behind the app's debug source toggle; the default `true` keeps every existing caller local-first. `dailyRecoveryUpdates` has **no stale peek**: the local computation is fast enough to be the first emission, so the stream never paints a stale server score first.
 
 `forceRemote` applies to the fallback fetch only — it does **not** bypass the local computation, matching the rest of the offline-first family. Factor titles and stage messages are the SDK's own English strings (the server's are localized server-side), the same trade-off §5.7's sleep score makes.
+
+### 5.8.1 Biometric baselines ⚠️ interface change
+
+```kotlin
+suspend fun getBiometricBaselines(date: Instant): SB_BiometricBaselines
+
+data class SB_BiometricBaselines(
+    val restingHR: SB_BiometricBaseline? = null,         // null: no baseline (see below)
+    val restingHRV: SB_BiometricBaseline? = null,
+    val respiratoryRate: SB_BiometricBaseline? = null,
+    val spo2: SB_BiometricBaseline? = null,
+)
+
+data class SB_BiometricBaseline(
+    val baseline: Float,                     // whole number; respiratory rate to one decimal
+    val value: Float? = null,                // the day's value as its dashboard tile shows it
+    val improvementVsBaseline: Float? = null, // value − baseline, positive = better; null without a value
+)
+```
+
+A day's resting HR, HRV, respiratory rate and SpO2 against their 30-day baselines, computed **on the device** the way the server's dashboard computes them:
+
+- **Baseline**: the median of the metric over the 30 days **before** `date` (the day itself is not one of them), counting only days that have a sleep and a reading. Fewer than 5 such days and that metric is `null`. The per-day values are the longest sleep's resting HR / HRV (as `getHRPoints` / `getHRVPoints` compute `restingHR` / `restingHRV`) and the **whole day's** respiratory rate / SpO2 (the median of all of that day's captures, asleep or not).
+- **`value`**: resting HR and HRV of the day's longest sleep, rounded; respiratory rate (one decimal) and SpO2 (whole number) of that sleep, or of the whole day when it has no sleep. `null` when the day has none.
+- **`improvementVsBaseline`**: the server's `improvement_vs_baseline` — `value − baseline` rounded at the second decimal the server's way, signed so a **positive number is an improvement** (a resting HR or respiratory rate below its baseline is positive).
+
+Each prior day's respiratory-rate and SpO2 points are first merged from the server (once per session, for every day — a day the band also synced to another phone is only partly on this one), and a day the device is otherwise missing — before this phone's history, or recorded elsewhere — is filled from the server's **raw points** (the sleep, and that day's HR, HRV, respiratory rate and SpO2), so the first read after a fresh install can take a while; later reads are cached until one of those 30 days changes. Under offline mode nothing is fetched and the baselines come from what the device holds. The server's own baselines are never read. Never throws.
+
+`getDashboardData` puts these in its tile footers (`footerCase = IMPROVEMENT_VS_BASELINE`, `improvementVsBaseline` the value) when the metric has a baseline and the day a value. `fetchDailySpO2` now also stores the day's points on the device, as the HR / HRV / RR daily reads already did, so a server day is readable by the baselines afterwards; `getSpO2` itself still reads the device only.
 
 ### 5.9 Local-first activity detail
 
@@ -1248,11 +1334,11 @@ The daily activity score is a pure function of one day (server `GenerateActivity
 score = round(100 · (0.8·min(1, activeCals/caloriesGoal) + 0.2·min(1, activeHours/12)))
 ```
 
-- **activeCals** — the day's active calories, `Σ(totalStepCalories + workoutCalories − workoutStepCalories)` over the local activity rows. This is the same total §5.6's calories read reports as **Active**, including the backend's per-minute `round(steps/10)` step-calorie cap (which the server applies in its DB row scan, and skips for workout minutes);
+- **activeCals** — the day's active calories, `max(0, Σ totalStepCalories + Σ workoutCalories − Σ workoutStepCalories)` over the day's per-minute rows, as §5.6's calories read builds them — including the backend's per-minute `round(steps/10)` step-calorie cap (which the server applies in its DB row scan, and skips for workout minutes). The minutes are summed **signed** and only the day's total is floored, as the server's score does, so a workout minute the HR model scores below resting takes calories off the day. That makes it §5.6's **Active** total except on such days, where it is lower: **Active** floors each minute, as the server's calorie graph does;
 - **activeHours** — local hours with **more than 250** steps, off the same hourly buckets §5.5's steps read exposes;
-- **caloriesGoal** — `remoteGlobals.goals.calories`, with the server's 500 default substituted for an unset goal.
+- **caloriesGoal** — `remoteGlobals.goals.calories`, with the server's 500 default substituted for an unset goal. The score and the baseline comparison are computed in the shared C library (`SB_activityScore` / `SB_activityBaseline` in mobile_edge_algorithms), the same code on both platforms, checked bit for bit against the server's own Go.
 
-The ring's **fill** is not the score: the server publishes `progressPercentage` relative to a rolling baseline, and `SB_ActivityScore.diffVsBaseline` alongside it. Both are reproduced locally — the baseline is the same score recomputed for each of the prior **30 days** and averaged, and is published only once **5** prior days exist, matching the server's gate (below that the server omits `progressPercentage` too, and a host falls back to the raw score). `progressPercentage` is `100` at or above the baseline, and the shortfall as a percentage below it. The prior days are read **local-only, with no backfill** — a 30-day baseline that fetched every missing day would cost 30 round-trips on first open, and a day with no local rows simply does not contribute, which is how the server treats a date with no stored score.
+The ring's **fill** is not the score: the server publishes `progressPercentage` relative to a rolling baseline, and `SB_ActivityScore.diffVsBaseline` alongside it. Both are reproduced locally — the baseline is the same score recomputed for each of the prior **30 days** and averaged, and is published only once **5** prior days exist, matching the server's gate (below that the server omits `progressPercentage` too, and a host falls back to the raw score). `progressPercentage` is `100` at or above the baseline, and the shortfall as a percentage below it. A prior day this device has no activity rows for — before its history began, or recorded on another phone — is **filled first**: the read pulls that day's steps and calories from the server (raw data only, the same reads the scored day's own backfill uses), stores them, and scores the day from them, so the average covers the same days as the server's. Each missing day is pulled at most once per signed-in session, six at a time, so the first read on a new device may make up to 30 days' worth of server reads (two per day); later reads are local. A day the server has nothing for either does not contribute, which is how the server treats a date with no stored score. In offline mode nothing is pulled and the baseline uses the days the device has. A result computed while a day could not be filled (a failed read) is returned but not cached, so the next read tries that day again.
 
 The four **metrics** — Calories, Duration, Distance, Steps, in the server's order — carry their day total in `avgValue` and hourly `timeDatapoints` in the API's wall-clock-encoded-as-UTC convention. `DISTANCE` is emitted in the user's **display unit** (km, or miles for an imperial profile, rounded to two decimals), as the API sends it; every other metric is SI. `name` / `unit` / `barChartTitle` are left **empty** — those are localized server-side, and the SDK owns no strings, so a host that shows them supplies its own.
 
@@ -1393,25 +1479,28 @@ itself, last in `SB_DashboardData.metricsList`, on every dashboard read: `fetchD
 
 ```kotlin
 val stress = data.metricsList.firstOrNull { it.metricType == SB_DashboardMetricType.STRESS_INDEX_DASH_METRIC }
-// null = no stress data for the day; else stress.valueFloat is the day's latest reading
+// null = the org doesn't run the stress index (hide the row); else stress.valueFloat is the day's
+// latest reading, 0 for a day with no readings (show "--")
 ```
 
 - `valueFloat` is the day's latest reading (`SB_StressIndexDay.latest.value`); `value` is it rounded,
   `title` is `"STRESS INDEX"`, `valueUnit` is empty, and the rest is defaulted (no average, footer or
   baseline).
-- **No tile means no data.** A day with no readings has no stress entry, and neither does a dashboard
-  while the algorithm is off for the org (unless forced in Developer Tools): the same gate that runs
-  the calculator.
+- **The tile is the row's gate.** It is present exactly while the algorithm runs for the org (or is
+  forced in Developer Tools) — the same gate that runs the calculator — and valued 0 for a day with no
+  readings. ⚠️ Earlier versions left the tile out for a day with no readings.
 - **Source.** Any day, on `fetchDashboardData` and the authoritative `dashboardUpdates` emission:
   `fetchStressIndex`, falling back to `getStressIndex` when it throws or returns null (the server only
   has a point once the phone has uploaded it). Past days are fetched too, so a day the device has no
   points for — every day, right after a logout → login — still gets its tile (SB-2550). Offline mode
   (`getDashboardData`): `getStressIndex` only. The stress read runs alongside the dashboard read, and its
-  failure never fails the dashboard: the tile is just absent.
+  failure never fails the dashboard: the tile carries 0.
 - **Cache.** The tile is never stored in the dashboard response cache, which keeps the server's payload
   only; the SDK adds it after that read, on every emission. The `dashboardUpdates` cache pre-paint
   carries the tile from `getStressIndex` (on device, no network), so it shows the device's current value
   rather than a stale or missing tile, and the authoritative emission then carries the server's value.
+  A past day's assembled entry (see "One read per day") holds the tile, and is replaced when stress
+  points land on the day.
 
 **Day reads.** Both return the same `SB_StressIndexDay`, null for a day with no readings.
 
@@ -1941,6 +2030,8 @@ Read it as a worked example of the request, the response, and what the app does 
   `SB_SkinTemperature`(+`SB_SkinTemperature.Point`; reuses `SB_HRPointType`) — local-first day summary from `getSkinTemperature(date)` (§5.13), all Celsius; each point tagged ASLEEP / AWAKE.
   `SB_DailyTemperatureTrending` (reuses `SB_SkinTemperature.Point`) — the server's day from `fetchDailyTemperature(date)`; `SB_TemperatureRangeTrending`(+`SB_TemperatureTrendingGraph`; reuses `SB_WMYGraph`) — the sleep + daily W/M/Y series from `fetchRangeTemperature` (§5.13). All Celsius.
   `SB_SpO2`(+`SB_SpO2.Point`; reuses `SB_HRPointType`) — on-device day summary from `getSpO2(date)`, in percent; each point tagged ASLEEP / AWAKE (SB-1433).
+  `SB_BiometricBaselines`(+`SB_BiometricBaseline`) — a day's resting HR / HRV / respiratory rate / SpO2 against their 30-day baselines, from `getBiometricBaselines(date)` (§5.8.1).
+  `SB_DevicePacketBatch`, `SB_DeviceDataStream`(+`csvHeader`) — one page of a band's raw device data as per-stream CSV, from `getDevicePackets` in offline mode (SB-2630).
   `SB_StressIndexDay`(+`SB_StressIndexDay.Point`; reuses `SB_HRPointType`) — a day's continuous stress index from `getStressIndex(date)` / `fetchStressIndex(date)` (§5.9.1): points plus SDK-calculated `latest`/`min`/`max`/`sleepAverage`/`daytimeAverage`.
   `SB_HRDataPoints`(+`SB_HRDataPoint`, `SB_HRPointType{AWAKE,ASLEEP}`) — local-first day HR from `getHRPoints(date)` (§5.2); the container computes `averageHR`/`lowestHR`/`highestHR` on the fly and carries a stored `restingHR` (all nullable, never a misleading 0).
   `SB_HRVDataPoints`(+`SB_HRVDataPoint`; reuses `SB_HRPointType`) — local-first day HRV from `getHRVPoints(date)` (§5.3); the container computes `averageHRV`/`lowestHRV`/`highestHRV` on the fly and carries a stored `restingHRV` (all nullable, never a misleading 0).
@@ -1959,6 +2050,11 @@ Read it as a worked example of the request, the response, and what the app does 
 - **Insights / population** — `SB_NewInsights`, `SB_InsightItem`, `SB_InsightFeedback`,
   `SB_PopulationInsights`(+filters/histogram/radar), `SB_PopulationInsightsFilterList`,
   `SB_PopulationMetricType`, `SB_PopulationAgeGroup`, `SB_PopulationGender`, `SB_DailyStatsResponse`.
+  `SB_PopulationInsightsHistogram` carries the numeric insight — `insightValue: Float` in
+  `insightUnit: SB_PopulationInsightUnit{NONE,MINUTES,MILLISECONDS,PERCENT}` and
+  `insightPercentage: Int` (share of the population the user beats, 0–100) — so the host can build
+  and localize the insight sentence itself. The server-preformatted English `insightText` is
+  deprecated but still sent; fall back to it when `insightValue == 0f` (proto3 has no presence).
 - **Meditation** — `SB_MeditationGraph`.
 - **Events / elements** — `SB_NotificationElement`.
 - **Surveys / agreements** — `SB_BriefSurvey`(+Question/Answer/Type), `SB_AgreementType`.
