@@ -53,7 +53,7 @@ dependencies {
     // (`SdkTokenExchange`). The public API requires HTTP/2, which `HttpURLConnection` does not
     // speak — it answers HTTP 464. Your app needs no HTTP client for the SDK itself; use whatever
     // you already talk to your own backend with.
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
