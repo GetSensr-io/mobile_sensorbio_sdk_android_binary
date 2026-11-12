@@ -36,11 +36,11 @@ dependencyResolutionManagement {
 
 ```kotlin
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:4.2.1")
+    implementation("com.sensorbio:sensorbio-sdk:4.3.1")
 }
 ```
 
-(Groovy DSL is equivalent: `maven { url '…' }` + `implementation 'com.sensorbio:sensorbio-sdk:4.2.1'`.)
+(Groovy DSL is equivalent: `maven { url '…' }` + `implementation 'com.sensorbio:sensorbio-sdk:4.3.1'`.)
 
 ## What you get
 
@@ -125,6 +125,27 @@ See [`com/sensorbio/sensorbio-sdk/maven-metadata.xml`](com/sensorbio/sensorbio-s
 `SDK_INTERFACE.md` documents the public surface as of each release.
 
 ## Release notes
+
+### v4.3.1 — November 12, 2026
+
+Includes 4.3.0, which was not published on its own.
+
+**Behavior changes**
+
+- **Workouts with missing or sparse heart rate now report calories.** A minute
+  with no usable HR is costed from the activity's MET value, and a workout whose
+  HR covers less than half its minutes is costed from MET throughout, so an
+  activity recorded without HR no longer reports 0 calories. This applies to
+  the activity report and to the day's calorie intervals.
+- **`SB_UserProfile.BMR` is no longer `0f` for an undisclosed sex.** A user
+  whose sex is `UNDISCLOSED` now gets the female Harris-Benedict BMR, matching
+  iOS. `BMR` and `CFF` are also computed in double precision, so they can
+  differ from earlier releases in the last digit.
+- A workout's first and last minutes are now charged by the share of the
+  minute the session actually covers, and workout calorie totals no longer
+  vary slightly from run to run.
+
+No API changes.
 
 ### v4.2.1 — November 4, 2026
 
