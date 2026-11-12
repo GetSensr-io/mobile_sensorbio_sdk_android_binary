@@ -12,7 +12,7 @@ This document describes the **public** customer-facing surface of the SensorBio 
 
 > **Visibility note.** This covers the customer-facing API only. SDK-internal symbols and first-party
 > (`internal`-flavor) API are not part of the published binary and are not documented in the customer
-> copy. SDK `version = "4.2.1"`.
+> copy. SDK `version = "4.3.1"`.
 
 > **Backend guide.** Registration needs one endpoint on your own server, which mints the single-use
 > SDK token your app hands to the SDK. [§6](#6-minting-sdk-tokens--your-backend) is the guide for
@@ -41,7 +41,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:4.2.1")
+    implementation("com.sensorbio:sensorbio-sdk:4.3.1")
 }
 ```
 
@@ -178,6 +178,14 @@ event streams, recording control, device & BLE control (§3.4), and the flat ser
 > reading `weightKG` / `heightCM` directly should apply the same `> 0` test — the
 > value being present is not the same as it being real. iOS has the matching
 > behaviour in its `currentUserBMR` (SB-2002).
+
+> **`BMR` and `CFF` come from the shared C, the same as iOS.** As of SB-2733 both
+> are computed by mobile_edge_algorithms' `calories.h`, the code iOS uses, and the
+> step calories the SDK uploads come from there too. Two visible changes on
+> Android: a user whose sex is `UNDISCLOSED` gets the female Harris-Benedict BMR,
+> as on iOS, where `BMR` used to be `0f`; and both values are computed in double
+> precision before narrowing to `Float`, so they can differ from earlier releases
+> in the last digit.
 
 > **Where `exerciseZoneAttributes` comes from.** Normally the server's: `maxHr`, `rhr` and
 > `zoneWeights` are whatever the last successful goals fetch returned. If your organization has the
@@ -1174,6 +1182,8 @@ The model mirrors the server (`physicalstats.getCalorieVal`) exactly. Each inter
 - `stepCalories   = max(0, totalStepCalories − workoutStepCalories)`
 - `workoutCalories = max(0, workoutCalories)`
 - `activeCalories = max(0, stepCalories + workoutCalories)` — the floor is **per point**, as the server's `getCalorieVal` applies it. Inside a workout the workout part is **recomputed from HR** (`CalculateRestingBPM`'s sibling `computeWorkoutCaloriesPerMinute`), not the band's step calories relabelled, and the model leaves a below-resting minute negative. So `totalActiveCalories` is **not** necessarily `totalStepCalories + totalWorkoutCalories` — each is floored on its own, exactly as the server's tiles are.
+
+  **MET fallback (SB-2735).** A workout with missing, sparse or implausibly low HR is not under-counted: a minute with no HR is costed from the activity's MET, an implausibly low or half-rate HR minute is floored at it, and a workout whose HR covers under half its minutes is costed from MET outright — so an activity with no HR reports calories (here and in the finalize report's header) rather than `0`. Paused minutes stay unscored. The server ships the same fallback behind a deployment flag, off until it is turned on; until then the server's recomputation can settle a sparse-HR workout lower.
 
 so **Active is unaffected by workouts** — only the Workout↔Steps split moves. On device the band never reports the split; it is reconstructed from the day's **activities** for locally-synced days (a minute inside an activity counts as workout, exactly as the server reclassifies it), and from the **server calories graph** for backfilled days (the unified backfill persists the server's per-hour split into the rows' workout columns). Locally-synced non-workout minutes also apply the backend's per-minute step-calorie cap (`round(steps/10)` when the stored value exceeds `steps/10`) so the local Active total matches the server's. **Resting** is a day-level value from the user's BMR (`BMR × elapsed/86400` today, full `BMR` for a past day), and **Total = Active + Resting**. Active / Total / Resting are exact regardless of the workout split.
 
