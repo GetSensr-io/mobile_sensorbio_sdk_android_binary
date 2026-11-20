@@ -36,11 +36,11 @@ dependencyResolutionManagement {
 
 ```kotlin
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:4.3.1")
+    implementation("com.sensorbio:sensorbio-sdk:5.0.0")
 }
 ```
 
-(Groovy DSL is equivalent: `maven { url '…' }` + `implementation 'com.sensorbio:sensorbio-sdk:4.3.1'`.)
+(Groovy DSL is equivalent: `maven { url '…' }` + `implementation 'com.sensorbio:sensorbio-sdk:5.0.0'`.)
 
 ## What you get
 
@@ -125,6 +125,55 @@ See [`com/sensorbio/sensorbio-sdk/maven-metadata.xml`](com/sensorbio/sensorbio-s
 `SDK_INTERFACE.md` documents the public surface as of each release.
 
 ## Release notes
+
+### v5.0.0 — November 20, 2026
+
+This release changes the firmware update and activity list calls, so an
+existing integration needs the edits below before it builds against 5.0.0.
+
+**Breaking changes**
+
+- **`updateFirmware` now downloads the firmware itself.** Call
+  `updateFirmware(delay, size)` with no image: the SDK fetches
+  `latestFirmwareVersion` through the Sensor Bio API for the signed-in user and
+  flashes it. The `url` and `data` overloads are removed. Download progress is
+  reported on the new `firmwareDownloadProgress` event before
+  `firmwareProgress` takes over for the flash.
+- **`SB_FirmwareUpdateError` now carries a `code`.** Choose the message you
+  show from `code` (`NO_DEVICE`, `NO_UPDATE_AVAILABLE`, `NOT_AVAILABLE`,
+  `DOWNLOAD_FAILED`, `FLASH_FAILED`, `RETRIES_EXHAUSTED`,
+  `DEVICE_RESET_REQUIRED`, `FACTORY_RESET_REQUIRED`); `canRetry` is still
+  there. The `device firmware update failed` analytics event gains the
+  `no_update_available`, `firmware_not_available` and `download_failed`
+  reasons.
+- **`fetchActivityList(force:)` is now `fetchActivityList(forceRemote:)`.**
+  The list is now fetched network-first, so `recent` reflects the latest
+  workouts; it falls back to the last cached list when offline. Calls that
+  pass the argument by name must be renamed.
+- **The `device errored` analytics event is sent once per error type.** Its
+  `error_type` property is replaced by `reason` (`BLE Error`,
+  `Watchdog Timer Error`, `PPG Error`, `IMU Overflow Error`,
+  `Algorithm NaN in Accel Buffer Error`), and `packet_bytes` holds only that
+  type's packets.
+
+**New**
+
+- **Cardiac coherence sessions.** `startCoherence` runs a guided coherence
+  recording with live readings on `coherence`, a per-second chart on
+  `coherenceHistory`, and the results on `coherenceReport` (also readable
+  later with `coherenceReport(startTsMillis)`). `isCoherenceAvailable` says
+  whether your organization runs coherence on the phone, and
+  `SB_PersistedRecording.isCoherence` restores a session after an app kill.
+
+**Behavior changes**
+
+- **A band on firmware above the maximum is only flagged `updateRequired`
+  when the server allows the downgrade.**
+- **Detected workouts are published as soon as the band has synced them**,
+  without waiting for their uploads, so a "workout detected" notification can
+  fire while the app is in the background.
+- Bluetooth connects and syncs that stall during setup now recover on their
+  own.
 
 ### v4.3.1 — November 12, 2026
 
