@@ -12,7 +12,7 @@ This document describes the **public** customer-facing surface of the SensorBio 
 
 > **Visibility note.** This covers the customer-facing API only. SDK-internal symbols and first-party
 > (`internal`-flavor) API are not part of the published binary and are not documented in the customer
-> copy. SDK `version = "4.3.1"`.
+> copy. SDK `version = "5.0.0"`.
 
 > **Backend guide.** Registration needs one endpoint on your own server, which mints the single-use
 > SDK token your app hands to the SDK. [§6](#6-minting-sdk-tokens--your-backend) is the guide for
@@ -41,7 +41,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.sensorbio:sensorbio-sdk:4.3.1")
+    implementation("com.sensorbio:sensorbio-sdk:5.0.0")
 }
 ```
 
@@ -111,7 +111,7 @@ Plain `var`s the host sets once after `initialize`:
 
 App identity is set-once config passed into `initialize(context)`; every field of `SB_AppConfig` is defaulted, so a customer passes nothing but the context.
 
-**Set `SB_AppConfig.environment` if you target anything but production.** `initialize` starts authenticated network activity of its own — the foreground credential check, the connectivity drain, the stale-submission sweep, and the white-label fetch — so the environment has to be known *before* it runs, not assigned afterwards. Assigning `SensorBioSDK.environment` after `initialize` returns leaves those first calls pointed at the default (`PRODUCTION`); against a staging session the server rejects the token and the 401 path ends the session (SB-2179). The `SensorBioSDK.environment` setter remains for hosts that switch at runtime, and rebuilds the channel when it does. `SB_AppType`/`appFlavor` are gone (SB-2095) — every value was a Sensr-Bio brand, so a third-party integration had no correct one to pass, and it had no effect on one either. App version + build are self-read from the `PackageManager` at init. `SB_FirmwareConfig` (S3 bucket + Cognito pool) is supplied out-of-band via the internal-only `configureFirmware`, not here.
+**Set `SB_AppConfig.environment` if you target anything but production.** `initialize` starts authenticated network activity of its own — the foreground credential check, the connectivity drain, the stale-submission sweep, and the white-label fetch — so the environment has to be known *before* it runs, not assigned afterwards. Assigning `SensorBioSDK.environment` after `initialize` returns leaves those first calls pointed at the default (`PRODUCTION`); against a staging session the server rejects the token and the 401 path ends the session (SB-2179). The `SensorBioSDK.environment` setter remains for hosts that switch at runtime, and rebuilds the channel when it does. `SB_AppType`/`appFlavor` are gone (SB-2095) — every value was a Sensr-Bio brand, so a third-party integration had no correct one to pass, and it had no effect on one either. App version + build are self-read from the `PackageManager` at init. Firmware needs no configuration: `updateFirmware` fetches the image through the Sensr API on the user's own session.
 
 
 ---
@@ -128,10 +128,12 @@ event streams, recording control, device & BLE control (§3.4), and the flat ser
 | `pairedDevice` | `SB_PairedDeviceState?` | the single paired device's slim identity (macAddress/name/type); null when none paired |
 | `haveDevice` | `StateFlow<Boolean>` | a device is paired (derived from `pairedDevice`) |
 | `pairingState` | `SB_PairingState?` | where the open pairing transaction stands; null when none is open (§3.4 *Pairing*) |
-| `updateRequired` | `StateFlow<Boolean>` | a firmware update is **required** (current firmware outside the min/max window); SDK-owned decision. Never `true` for a device emulator (serial `EMULATR…`) on firmware `99.99.99` |
+| `updateRequired` | `StateFlow<Boolean>` | a firmware update is **required** (current firmware outside the min/max window); SDK-owned decision. Firmware **above** the max is required only when the server allows the downgrade to the max; until the SDK has asked, and when the server refuses, it stays `false` (and `latestFirmwareVersion` is the band's current version). Never `true` for a device emulator (serial `EMULATR…`) on firmware `99.99.99` |
 | `updateSuggested` | `StateFlow<Boolean>` | a firmware update is **suggested** (newer baseline exists, not mandatory). Never `true` for a device emulator on firmware `99.99.99` |
 | `latestFirmwareVersion` | `StateFlow<String?>` | the version the host would flash to; null when no device/firmware or upgrades disabled |
 | `deviceSyncing` | `StateFlow<Boolean>` | a device sync is in progress |
+| `isCoherenceAvailable` | `StateFlow<Boolean>` | the org runs `cardiac_coherence` on the phone, so offer a coherence session (§3.3.1) |
+| `coherenceHistory` | `StateFlow<List<Double?>>` | the running coherence session's alignment, one per second; null = no reading (§3.3.1) |
 | `percentSynced` | `StateFlow<Int>` | connected device's sync progress 0–100 (**100 = up to date**); resets to 100 on disconnect |
 | `recordingState` | `SB_RecordingState` | recording FSM (Idle / Recording(elapsed,target) / Finalizing(phase)) |
 | `canFinalize` | `Boolean` | whether the active recording may be finished early |
@@ -223,11 +225,14 @@ event streams, recording control, device & BLE control (§3.4), and the flat ser
 | `latestBookend` | `SB_LatestBookend(startTs, endTs)` | activity window (epoch ms) resolved by a sync from the band's activity bookends (spot-check confirm) |
 | `deviceLinkFailed` | `SB_DeviceLinkFailure` | a device-link (serial-enforcement) rejection; host alerts "wrong device" / retry |
 | `firmwareProgress` | `Float` | raw firmware-flash progress percent (0–100); pairs with the suspend `updateFirmware()` (§3.4) |
+| `firmwareDownloadProgress` | `Float` | 0–100 progress of the image download `updateFirmware()` runs before the flash (0 at start, 100 once the image is on disk); `firmwareProgress` takes over when the flash begins |
 | `syncCompleted` | `SB_SyncResult?` | a device sync drained; non-null on detailed completion, null on short-circuit. Fires once per sync, after the final batch — never between intermediate batches |
 | `biometricRecordResult` | `SB_BiometricRecordResult` | spot-check submit outcome (recording id on success / error on terminal failure) |
 | `spotCheckReport` | `SB_SpotCheckDetails` | the spot check's report, built from local data at finalize — **before** the submit and without waiting on it (see below) |
 | `activityReport` | `SB_WorkoutDetail` | a finished activity's report, built from local data at finalize — before the submit and without waiting on it (see below) |
 | `meditationReport` | `SB_MeditationGraph` | a finished meditation's report, built from local data at finalize (see below) |
+| `coherence` | `SB_CoherenceReading` | live readings during a coherence session: one per beat and one a second (§3.3.1) |
+| `coherenceReport` | `SB_CoherenceReport` | a coherence session's results, once at finalize — after its package is queued, before the activity submits (§3.3.1) |
 | `biometricRecordProcessed` | `Unit` | spot-check data synced + submit dispatched; host resets post-biometric UI |
 | `hr` / `hrv` / `rr` / `snr` / `bbi` / `ppg` | `SB_HeartRateSample` / `SB_HrvSample` / `SB_RespiratoryRateSample` / `SB_SnrSample` / `SB_BbiSample` / `SB_PpgSample` | high-frequency per-sample biometric streams during a live/manual session (buffered + `DROP_OLDEST`) |
 | `ecg` | `SB_EcgSample` | ECG waveform samples (V3 hardware) |
@@ -386,12 +391,12 @@ and failure times, and the phone clock `device epoch updated` compared the band 
 | Event | When | Properties |
 |---|---|---|
 | `device epoch updated` | the configure step found the band clock ≥ 5 s off the phone and rewrote it | `device_epoch` — band epoch before correction, **seconds** · `phone_epoch` — phone epoch, **seconds** · `delta_seconds` — `phone_epoch − device_epoch`, signed integer |
-| `device errored` | at most once per synced chunk containing diagnostic error packets | `error_type` — space-separated tokens, in this order, no leading/trailing space: `ble` `watchdog` `ppg` `imu_overflow` `algorithm_nan_in_accel_buffer` · `packet_bytes` — each error packet as uppercase space-separated hex bytes, packets joined by `", "` (e.g. `87 0B 07 0C 01, 87 0B 07 07 02`) · `epoch` — band timestamp of the latest packet in the batch, **seconds** |
+| `device errored` | once per error type found in a synced chunk's diagnostic packets (at most one per `reason` per chunk) | `reason` — the error: `BLE Error` · `Watchdog Timer Error` · `PPG Error` · `IMU Overflow Error` · `Algorithm NaN in Accel Buffer Error` · `packet_bytes` — that type's error packets as uppercase space-separated hex bytes, packets joined by `", "` (e.g. `87 0B 07 0C 01, 87 0B 07 0C 02`) · `epoch` — band timestamp of the latest packet in the batch, **seconds** |
 | `device sync failed` | the SDK NAKs a sync batch (intermediate or final) | `reason` — always present, see below · `intermediate` — `true` / `false` · `number_of_packets_recorded` — packets the band reported for this sync · `number_of_packets_synced` — packets received so far · `expected_sequence_number`, `received_wrong_sequence_number` — only when `reason = out_of_sequence` |
 | `device synced` | after a successful sync drain, throttled: only if more than 5 min have passed since the last emission's anchor. Counters accumulate between emissions and reset after each one; the anchor only advances on a non-intermediate sync. In-memory (not persisted) | `packet_count` — packets synced since the last emission · `number_of_syncs` — syncs since the last emission · `sync_duration` — accumulated seconds, exactly 2 decimals (e.g. `12.34`) |
 | `device removed` | the host removed the paired band through the SDK (`removeDeviceFromPairedDevices`); captured before the teardown | `serial_number` — the removed band's serial (`""` if never read) · `phone_epoch` — time of the removal, **seconds** |
 | `device paired` | once per new pairing through the SDK's pairing flow (`pairingState` → `Paired`) — never on a reconnect of an already-paired band. Sent once the band's serial and firmware version are both known (normally at once, since pairing configures the band; otherwise on the first configuration after it). In-memory: a pair whose report is still waiting when the app is killed is not reported | `serial_number` — band serial · `firmware_version` — as `firmwareVersion` publishes it · `phone_epoch` — when the pairing completed, **seconds** |
-| `device firmware update failed` | an `updateFirmware` call failed — once per call, just before it throws `SB_FirmwareUpdateError` (which is unchanged) | `reason` — see below · `current_version` — band firmware when the update started (`""` if unknown) · `attempted_version` — the version being installed: known when the bytes are the image the SDK's own `getFirmware` returned (internal builds), else `""` · `phone_epoch` — time of the failure, **seconds** |
+| `device firmware update failed` | an `updateFirmware` call failed — once per call, just before it throws `SB_FirmwareUpdateError` (§3.2.4) | `reason` — see below · `current_version` — band firmware when the update started (`""` if unknown) · `attempted_version` — the version being installed (`latestFirmwareVersion`; `""` when there was none) · `phone_epoch` — time of the failure, **seconds** |
 | `device firmware update successful` | an `updateFirmware` call succeeded — once per call. Sent after the band reboots and reconnects, so `new_version` is what the band itself reports; if it isn't back within 5 minutes, sent then with the installed version | `old_version` — band firmware before the update · `new_version` — the version the band reports after its reboot, else the installed version (`""` if the SDK didn't know it) |
 | `sleep recording uploaded to server successful` | the sleep upload RPC returned OK (including when the server flagged the sleep spurious) | `sleep_end_epoch` — sleep end, **milliseconds** |
 | `sleep recording upload failed` | the server permanently rejected a sleep upload, so the SDK dropped the sleep and will not retry it — once per sleep. Transient failures (no internet, timeouts, server errors) send nothing: the sleep stays queued and is retried | `reason` — see below · `sleep_end_epoch` — sleep end, **milliseconds** |
@@ -439,6 +444,9 @@ Otherwise an SDK-level code:
 |---|---|---|
 | `not_connected` | no band connected when `updateFirmware` was called | both |
 | `not_configured` | the band reported it isn't configured | both |
+| `no_update_available` | neither `updateRequired` nor `updateSuggested` was set, so there was nothing to install | both |
+| `firmware_not_available` | the server won't provide the version for this band (not published, not allowed by the organization's firmware gate, or no single OTA image) | both |
+| `download_failed` | the image download failed (network, or an expired link) | both |
 | `unknown` | any other error, including a cancelled calling coroutine | both |
 
 **Not emitted (removed in SB-2440):** `recording started` / `recording ended` (the host knows when it
@@ -450,6 +458,23 @@ Related domain signals are separate flows, not analytics events: `syncCompleted`
 `hrSyncFinishedForActivity`, `sleepUploaded`, `deviceReset` and `latestBookend`
 (§3.2 table).
 
+#### 3.2.4 Firmware update failures — `SB_FirmwareUpdateError.code`
+
+`updateFirmware` throws `SB_FirmwareUpdateError`. Its `code` names what the user can do about the failure, so the host chooses its message from the code alone — it never has to look at the band's firmware version or parse `message`.
+
+| `code` | When | `canRetry` | Tell the user |
+|---|---|---|---|
+| `NO_DEVICE` | no band is paired and connected | false | connect the band |
+| `NO_UPDATE_AVAILABLE` | neither `updateRequired` nor `updateSuggested` is set | false | nothing to do |
+| `NOT_AVAILABLE` | the server won't provide that version for this band (not published, or outside the organization's firmware gate) | false | try again later / contact support |
+| `DOWNLOAD_FAILED` | listing, link or download failed in transit | **true** | try again |
+| `FLASH_FAILED` | the flash failed and the frame-size backoff has a smaller size left | **true** | try again |
+| `RETRIES_EXHAUSTED` | the flash failed at every frame size | false | contact support |
+| `DEVICE_RESET_REQUIRED` | the band holds a partial image from an earlier, interrupted flash and the SDK's own reset-and-retry didn't clear it | false | restart (reset) the band, then update again |
+| `FACTORY_RESET_REQUIRED` | the band was in recovery mode (firmware `0.x.x`) and the flash failed. Recovery firmware refuses the reset command, so the SDK doesn't send one | false | factory reset the band with its side button, then update again |
+
+A failed download in recovery mode is still `DOWNLOAD_FAILED`: the band wasn't touched, so retrying can work. Cancelling the calling coroutine is never one of these — the `CancellationException` propagates.
+
 ### 3.3 Recording control (suspend, on the facade)
 
 | Member | Signature | Notes |
@@ -457,13 +482,15 @@ Related domain signals are separate flows, not analytics events: `syncCompleted`
 | `recordDetailedBiometrics` | `suspend (duration, minDuration) -> Unit` | spot-check, **awaits the whole session end-to-end**; auto-finalizes on the countdown or via `finishCurrentRecording()`. The report arrives earlier, on `spotCheckReport` (§3.2). Throws `NoPairedDevice`/`BleStartFailed`/`TooShort`/`BleStopFailed`/`NotEnoughData`/`StillSyncing`; cancel the coroutine to abort |
 | `recordActivity` | `suspend (activityName, minDuration) -> Unit` | activity (count-up). **Awaits the whole session end-to-end** — returns on the successful submit (host then runs its survey), throws `NoPairedDevice`/`BleStartFailed`/`TooShort`/`NotEnoughData` |
 | `recordMeditation` | `suspend (duration, minDuration, sessionName?, sessionNameAlreadyExists, surveyUrl?) -> Unit` | meditation (always a `duration`-sec countdown). **Awaits end-to-end**; same return/throw contract as `recordActivity` |
+| `startCoherence` | `suspend (activityName, settings = SB_CoherenceSettings.DEFAULT, duration = 300, minDuration) -> Unit` | cardiac coherence: an activity recording counting down from `duration` sec, with live coherence readings. **Awaits end-to-end**; same contract as `recordActivity`, plus `AlreadyRecording` (§3.3.1) |
+| `endCoherence` | `suspend () -> Unit` | end the coherence session early; the same as `finishCurrentRecording()` |
 | `awaitActiveRecordingCompletion` | `suspend () -> Unit` | await a recording the host did **not** start via `record*()` (a process-kill resume) so it can run the survey + surface errors identically; no-op when idle |
 | `finishCurrentRecording` | `suspend () -> Unit` | signal stop + window-sync + schedule submit; outcome surfaces in the in-flight `record*()` await |
 | `cancelCurrentRecording` | `() -> Unit` | abort without submit — the session is discarded outright: nothing is stored, no report is published, nothing is queued for upload, and the persisted envelope is cleared so a later launch can't resurrect it. The band is stopped (or the stop armed for the next configure) and `recordingState` goes straight from `Recording` to `Idle` with no `Finalizing` phase; an in-flight `record*()`/`awaitActiveRecordingCompletion()` await resolves as a cancellation |
 | `pauseRecording` | `() -> Unit` | pause the running activity/meditation: freeze the elapsed clock + stop the device PPG stream (no biometrics accrue). No-op if not recording / already paused / spot-check |
 | `resumeRecording` | `() -> Unit` | resume a paused recording: record the pause window + restart the device stream. Each paused span is excluded from the session's `active_workout_segments` |
 | `resumeActiveRecording` | `() -> Unit` | resume a recording persisted across a process kill (crash-restore / app launch). Since SB-1745 this is *restore*, not blindly *resume*: if the persisted envelope carries a stop intent (the user had already tapped End before the process died) it re-enters finalize at the persisted stop instant instead of resuming the count-up; if the envelope is older than 24h with no stop intent it is discarded rather than resurrected. Only a genuinely still-running session resumes live |
-| `activeRecording` | `val SB_PersistedRecording?` | crash-restore: a recording persisted across process death |
+| `activeRecording` | `val SB_PersistedRecording?` | crash-restore: a recording persisted across process death. `isCoherence` marks a coherence session (§3.3.1) |
 | `activeRecordingState` | `val SB_ActiveRecordingInfo?` | flat snapshot of the live activity/meditation recording the engine is driving (for the live screen) |
 
 **Tick cadence vs. publish cadence (SB-1949).** Activity/meditation run a 200ms timer loop and spot
@@ -484,6 +511,147 @@ the instant it reached the target, so a 30-minute meditation records exactly 30:
 the stop tick ran. The SDK holds a partial wakelock while a countdown runs (released on pause and at
 the end, and bounded by a timeout) so the auto-stop and its end cue fire on time with the screen off.
 The `WAKE_LOCK` permission merges in from the SDK manifest; the host doesn't declare it.
+
+#### 3.3.1 Cardiac coherence (SB-2673) ⚠️ interface change
+
+A coherence session is an **activity recording** with the coherence library running on its live
+beat-to-beat intervals. It runs like `recordActivity`: same band stream, `canFinalize` gate,
+pause/resume, post-stop sync, `activityReport` and submit. Unlike `recordActivity`, it has a fixed
+length (five minutes by default): `recordingState` counts down as `Recording(elapsedMs, targetMs =
+duration)`, and the session finalizes itself when time runs out, the way `recordMeditation` does. It is
+stored as a general-cardio activity under the name you pass. On top of that it publishes a live reading
+on `coherence`, and when it finishes it uploads a session package. iOS parity: SB-2671.
+
+```kotlin
+suspend fun startCoherence(
+    activityName: String,                                   // localized, e.g. "Coherence Check"
+    settings: SB_CoherenceSettings = SB_CoherenceSettings.DEFAULT,
+    duration: Int = SB_CoherenceSettings.DEFAULT_DURATION_SECONDS,   // 300
+    minDuration: Int,
+)                                                           // returns once finalized: at the target, or after endCoherence()
+suspend fun endCoherence()                                  // end early; same as finishCurrentRecording()
+
+val coherence: SharedFlow<SB_CoherenceReading>
+val coherenceHistory: StateFlow<List<Double?>>              // one alignment per second since the start; null = no reading
+val isCoherenceAvailable: StateFlow<Boolean>
+```
+
+**Only offer it when it's available.** Show a coherence entry point only while `isCoherenceAvailable`
+is `true`. That means your org has `cardiac_coherence` enabled with `execution_location = mobile_sdk`.
+The flag follows the Algo Store list, including the copy restored at launch, so it is correct offline
+too. `startCoherence` does not check it: a session started without the algorithm still runs and
+publishes readings, but uploads no package.
+
+`startCoherence` throws `SB_RecordingError.AlreadyRecording` if a recording or another coherence session
+is already running, and otherwise whatever `recordActivity` throws. `cancelCurrentRecording()` cancels
+the session: nothing is submitted and no package is built.
+
+**Readings.** `coherence` emits whenever a beat arrives, and also once a second. The per-second emission
+matters because the library only notices that beats have stopped when it is asked.
+
+```kotlin
+data class SB_CoherenceReading(
+    val elapsedSeconds: Double,
+    val isReady: Boolean,
+    val stage: SB_CoherenceStage,          // COLLECTING / PROVISIONAL / ESTABLISHED
+    val reason: SB_CoherenceReason,        // LEARNING / REBUILDING / WAITING_FRESH / HOLD_STEADY / LOW_VARIATION / EARLY / ACTIVE
+    val alignment: Double?,                // 0..1, 18 s window; null unless isReady
+    val referenceAlignment: Double?,       // 0..1, whole 60 s history; null until ESTABLISHED
+    val breathsPerMinute: Double?,         // the wave the rhythm follows; null if none found
+    val progress: Double,                  // 0..1 toward the first reading
+    val maturityProgress: Double,          // 0..1 toward the 60 s reference
+    val variationMs: Double,
+    val artifactRatio: Double,             // 0..1 share of beats outside 300–2000 ms
+    val acceptedBeats: Int,
+    val historySeconds: Double,
+    val lastBeatAgeMs: Int?,               // ms since the newest beat; null before the first
+)
+```
+
+- **The first reading** needs 18 s and 14 beats. The 60 s reference needs 58 s and 35 beats.
+- **Until then**, `alignment` is `null`. The library's 0.5 placeholder is never passed through.
+- **Gaps:** a gap of more than 2.5 s between beats starts the history again (`REBUILDING`).
+- **Stale readings:** when beats stop, a ready reading keeps its last value for up to 8 s before going
+  to `WAITING_FRESH`. Use `lastBeatAgeMs` to tell when a ready reading is going stale.
+- **The band's clock.** The band stamps each beat about 6.5 s before the phone receives it. The SDK
+  measures that lag from the live beats and asks the library on the band's clock, so the history spans
+  the full 60 s and the reference establishes on time (about a minute in).
+- **Display is the app's job:** score scale, bands, smoothing, and wording for each `reason`. The
+  library's own wording was written for a fingertip sensor; `HOLD_STEADY` in particular needs wording
+  that suits a wrist band.
+
+```kotlin
+data class SB_CoherenceSettings(
+    val inhaleSeconds: Double = 5.0,
+    val exhaleSeconds: Double = 5.0,
+    val highMin: Double = 0.6,             // placeholder
+    val mediumMin: Double = 0.35,          // placeholder
+    val displayFullScale: Double = 0.9,
+) { companion object { val DEFAULT; const val DEFAULT_DURATION_SECONDS = 300 } }
+```
+
+The settings never change the readings. They are recorded in the package so a report can show what the
+user saw, and `highMin` / `mediumMin` set the summary's time-in-band figures.
+
+**Upload.** At finalize, the session package is queued for the `cardiac_coherence` algorithm, ahead of
+the activity's own submit, the same way the HR Zone result travels with a workout:
+- **Contents:** one reading per second, every beat, events, and a summary (`coherenceSession` schema
+  2.0.0, readings and beats stored column-wise: about 31 KB for five minutes).
+- **Delivery:** it retries while offline. Nothing is needed from the host.
+- **Refusals are final.** The server caps one algorithm result at 64 KB. A package over that is refused
+  before it is sent, and a gRPC `INVALID_ARGUMENT` from the server is treated as final too, so neither
+  holds the activity's submit back on every retry.
+- **When it is skipped:** if your org doesn't have `cardiac_coherence` enabled with
+  `execution_location = mobile_sdk`, nothing is uploaded and the activity submits as normal.
+
+**Results.** At finalize, after the package is queued and before the activity is submitted, the SDK
+publishes the session's results once on `coherenceReport`. It also keeps them on the phone, so you can
+open the same results from your timeline later:
+
+```kotlin
+val coherenceReport: SharedFlow<SB_CoherenceReport>
+fun coherenceReport(startTsMillis: Long): SB_CoherenceReport?   // null: not a coherence session from this phone
+
+data class SB_CoherenceReport(
+    val startTsMillis: Long,               // the activity's start, as the timeline files it
+    val endTsMillis: Long,
+    val durationSeconds: Int,
+    val settings: SB_CoherenceSettings,
+    val alignments: List<Double?>,         // one per second of the whole session; null = no reading
+    val meanAlignment: Double?,            // over the seconds with a reading
+    val breathsPerMinute: Double?,         // mean
+    val timeInHighSeconds: Int,            // alignment >= settings.highMin
+    val percentInHigh: Double,             // 0..100, from the first reading on (start-up excluded)
+    val finalReferenceAlignment: Double?,
+)
+```
+
+Results are kept whether or not `cardiac_coherence` is enabled, because the report belongs to the user
+and the upload belongs to the org. They are deleted on sign-out. The server has no way to read a
+session back, so the lookup only works for sessions recorded on this phone.
+
+**Session chart.** `coherenceHistory` is the running session's per-second alignment. Bind your chart to
+it rather than accumulating `coherence` yourself. It is replaced in full when the SDK back-fills (see
+below), and it is cleared when a new session starts.
+
+**After an app kill.** The persisted recording says whether it is a coherence session:
+
+```kotlin
+data class SB_PersistedRecording(
+    // …
+    val coherenceSettings: SB_CoherenceSettings? = null,   // null for every other recording
+) { val isCoherence: Boolean }
+```
+
+On relaunch, check `activeRecording?.isCoherence`. If it is `true`, bring the user back to your
+coherence screen rather than the activity screen, and await `awaitActiveRecordingCompletion()` as you
+would for any restored recording.
+- **Live readings:** the SDK starts a new library instance on the session's original clock, so
+  `coherence` resumes and `elapsedSeconds` keeps counting from the real start.
+- **The gap:** the band keeps recording to flash through the kill. Each `syncCompleted` while the
+  session runs replays the synced beats, and `coherenceHistory` fills in the stretch the app missed.
+- **At finalize:** the post-stop sync has brought in the whole window, so the package and report are
+  rebuilt from the stored beats in full.
 
 ### 3.4 Device & BLE control (on the facade)
 
@@ -606,7 +774,7 @@ all-set screen.
 | `reset` | `() -> Unit` | send the connected band its reset command. This is a plain reset, **not** a factory reset; the outcome arrives on `deviceReset` (§3.2) |
 | `userLED` | `suspend (red=…, green=…, blue=…, blink=…, seconds: Int)` | LED control (awaits the BLE write) |
 | `hapticMotor` | `suspend (pulse: Boolean = false, intensity: Int, seconds: Int)` | run the haptic motor (awaits the BLE write). `pulse` = pulse vs. solid (haptic analogue of `blink`); `intensity` is 0..100% |
-| `updateFirmware` / `setFirmwareUpdateDeviceId` | `suspend (url, delay?, size?)` **or** `suspend (data: ByteArray, delay?, size?)` *(throws `SB_FirmwareUpdateError(canRetry)`)* / `(deviceId: String?)` | firmware flash — `url` = a local file, or pass `data` = the bytes from `getFirmware` (SDK temp-files them internally); progress on the `firmwareProgress` event (§3.2). Each call reports `device firmware update failed` or `device firmware update successful` on `analyticsEvents` (§3.2.3). `setFirmwareUpdateDeviceId` is the session-guard seam |
+| `updateFirmware` / `setFirmwareUpdateDeviceId` | `suspend (delay?, size?)` *(throws `SB_FirmwareUpdateError(code)`)* / `(deviceId: String?)` | update the band to `latestFirmwareVersion`: the SDK downloads the image through the Sensr API (`ListFirmwareVersions` → `GetFirmwareDownloadURL`) and flashes it — the host supplies no image. Download progress on `firmwareDownloadProgress`, flash progress on `firmwareProgress` (§3.2). On failure it throws `SB_FirmwareUpdateError`, whose `code` (`SB_FirmwareUpdateError.Code`) says what the user can do — pick the message from the code; `message` is diagnostic text. `canRetry` is true only for `DOWNLOAD_FAILED` and `FLASH_FAILED`. See §3.2.4 for the codes. Cancelling the calling coroutine is not reported as an `SB_FirmwareUpdateError` (and no failure event is sent): the `CancellationException` propagates unchanged. `delay`/`size` override the adaptive frame defaults. Each call reports `device firmware update failed` or `device firmware update successful` on `analyticsEvents` (§3.2.3). `setFirmwareUpdateDeviceId` is the session-guard seam |
 | `updateConnectedDeviceFirmware` | `(packet: SB_FirmwareVersionPacket) -> Unit` | apply a resolved firmware-version packet to the connected device |
 | `migrateDeviceTypeAfterFlash` | `() -> Unit` | call after a flash completes: if the device was an Alter/AlterV2 migrated onto Sensr firmware, rewrite its stored type to the Sensr equivalent + re-register so the forced-update gate stops re-firing on reconnect. No-op for a same-type flash |
 | `setAskForDeviceResponse` | `(enable: Boolean) -> Unit` | device button-tap prompting. **Not needed for pairing** — `beginPairing` runs the LED/haptic confirmation and the button listening itself; reach for this (and `userLED` / `hapticMotor`) only for your own device interactions outside a pair |
@@ -690,7 +858,7 @@ Called directly on `SensorBioSDK.<method>(…)`. One-shot reads are `suspend fun
 | Workouts | `fetchWorkoutDetail(workoutTime: Instant)` *(falls back to the locally-built report — §5.11)*, `modifyWorkout(action, date: Instant, timestamp: Instant, …)`, `fetchWorkoutSummary(date: Instant, granularity: SB_SummaryGranularity, workoutName, workoutTime: Instant)`, `fetchWorkoutTimeline(…, direction: SB_PageFetchDirection) -> SB_WorkoutTimelineResult`, `workoutTimelineUpdates() -> Flow<SB_WorkoutTimelineResult>` *(stale→fresh first page — §5.12)*, `fetchWorkoutRecordingInfo` |
 | In-flight submissions | `reconcileSubmissions(entries: List<SB_WorkoutEntry>)` *(flip matched in-flight cards → processed; call after each `fetchWorkoutTimeline` with `result.items.flatMap { it.entries }`; no network)*, `retrySubmission(startTimestamp)` *(re-drive a FAILED submission)* — observe via `inflightSubmissions` (§3.1) |
 | Local-first reports | `localRecordingEntries() -> List<SB_LocalRecordingEntry>` *(suspend; real timeline rows for recordings the server hasn't returned — §5.11)*, `localWorkoutDetail(startTimestamp)`, `localMeditationGraph(startTimestamp)`, `localSpotCheckDetails(startTimestamp)` *(all suspend; the stored report, or null)* |
-| Activities | `fetchActivityList(force: Boolean = false) -> SB_ActivityRecordingList`, `fetchTrainedActivities()` |
+| Activities | `fetchActivityList(forceRemote: Boolean = false) -> SB_ActivityRecordingList` *(network-first, so `recent` reflects the latest workouts; `forceRemote = false` falls back to the last cached list when offline)*, `fetchTrainedActivities()` |
 | Spot-check | `fetchSpotCheckDetails(recordingId)` *(one-shot suspend read; throws on RPC error)* |
 | Recording meta | `fetchRecordingMetaInfo(type) -> List<SB_RecordingSessionMetaItem>`, `deleteRecordingMeta(id, name, type)` |
 | Insights | `fetchNewInsights`, `submitInsightsFeedback`, `fetchPopulationInsightsMetricList`, `fetchPopulationInsights` |
@@ -1695,9 +1863,7 @@ happened.
 **Everything published is answerable now — that is the whole contract.** There is no status on the
 type and no state machine for a host to reproduce, because a detection is only published once:
 
-* the band has synced past the activity's end, **and**
-* the passive uploads covering its window have all landed (PPG-metrics results, raw activity
-  packets, engine/step packets), **and**
+* the band has synced past the activity's end (its data is on the phone), **and**
 * it is still today's, **and**
 * it does not overlap a recording the user made themselves — the detection algorithm keeps running
   during a manual recording, so the same minutes can arrive twice, and the user's own recording wins.
@@ -1707,13 +1873,13 @@ automatically (there is nowhere left to answer them) the moment the calendar day
 flow re-emits without them — a host showing the card on "today" needs no date filter of its own.
 Ones already answered are retired too.
 
-Both of the first two conditions matter, and the first is not redundant: every "is it all uploaded?"
-count is zero for a window holding no rows, and a window the band has not sent yet holds none — so
-without the sync-frontier check a detection would be published the instant its bookend arrived, which
-is when its data is *least* likely to have reached the server.
+The sync check is needed because the bookend can arrive before the data it bookends. A detection
+does **not** wait for that data to reach the server: like a recording the user started, confirming
+builds the report locally and queues the upload + submit. So a detection is published straight off a
+background sync — a host's "workout detected" notification can fire while the app is closed, rather
+than only once the app is opened and its uploads run (SB-2781 / SB-2782).
 
-That gate is what makes `confirmDetectedActivity` a submit-now rather than a submit-eventually, and
-it is why the confirmed activity is indistinguishable from one the user recorded: same
+The confirmed activity is indistinguishable from one the user recorded: same
 `upload_activity` row, same upload + submit drain, same locally-built report, same
 `inflightSubmissions` / `localRecordingEntries()` surfaces described in §5.11. A host already
 rendering those needs no extra work for the tail of this flow — only the card that asks the question.
@@ -1722,8 +1888,8 @@ The session is stamped `used_hrm=true`, like every recorded activity (meditation
 activities carry no `used_hrm`), because there genuinely are biometrics behind the window: the band
 turned the PPG on for it. The per-second
 continuous HR it captured uploads as **part of that submit**, attributed to the workout — which is
-exactly why it is not one of the uploads the readiness gate waits on. Uploading it early to satisfy
-the gate would send it with no workout to attribute it to and cost the activity its HR graph.
+why it is never uploaded before confirmation: sent early, it would have no workout to attribute it
+to and the activity would lose its HR graph.
 
 `activityName` decides whether steps and distance belong on the report, so prefer a name from your
 activity catalogue over free text.
@@ -2010,6 +2176,7 @@ Read it as a worked example of the request, the response, and what the app does 
 - **Recording** — `SB_RecordingState`, `SB_RecordingFinalizationPhase`, `SB_RecordingMetaType`,
   `SB_RecordingSession`, `SB_RecordingInfo`, `SB_RecordingCustomization`, `SB_PersistedRecording`, `SB_ActiveRecordingInfo`,
   `SB_RecordingError`, `SB_RawSensorDataLogging`, `SB_SpotCheckDetails`,
+  `SB_CoherenceReading` / `SB_CoherenceStage` / `SB_CoherenceReason` / `SB_CoherenceSettings` / `SB_CoherenceReport` (SB-2673),
   `SB_SubmitFinishedRecordingResult`, `SB_LatestBookend`, `SB_BiometricRecordResult`,
   `SB_ExerciseZoneAttributes` / `SB_HRZone` (`SB_HREffortZone` deprecated, SB-2355).
 - **Sleep** — `SB_SleepItem`, `SB_SleepDetailDay`, `SB_SleepDetailAggregated`, `SB_SleepStages`,
